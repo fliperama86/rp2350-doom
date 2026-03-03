@@ -21,7 +21,18 @@
 #define __I_PICO_SOUND__
 
 #include "pico.h"
-typedef struct audio_buffer audio_buffer_t;
+
+// Minimal audio_buffer_t shim (I2S audio hardware disabled)
+typedef struct audio_buffer_bytes {
+    uint8_t *bytes;
+    uint32_t size;
+} audio_buffer_bytes_t;
+
+typedef struct audio_buffer {
+    audio_buffer_bytes_t *buffer;
+    uint32_t max_sample_count;
+    uint32_t sample_count;
+} audio_buffer_t;
 
 #if USE_EMU8950_OPL
 #define PICO_SOUND_SAMPLE_FREQ 49716

@@ -80,7 +80,7 @@ typedef enum {
 } pre_wipe_state_t;
 extern pre_wipe_state_t pre_wipe_state;
 #define TEXT_SCANLINE_BUFFER_WORDS (SCREENWIDTH + 4)
-#define TEXT_SCANLINE_BUFFER_TOTAL_WORDS (PICO_SCANVIDEO_SCANLINE_BUFFER_COUNT * TEXT_SCANLINE_BUFFER_WORDS)
+#define TEXT_SCANLINE_BUFFER_TOTAL_WORDS (4 * TEXT_SCANLINE_BUFFER_WORDS)
 void V_BeginPatchList(vpatchlist_t *patchlist);
 void V_EndPatchList(void);
 void V_DrawPatchList(const vpatchlist_t *patchlist);

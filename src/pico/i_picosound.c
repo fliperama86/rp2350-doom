@@ -32,7 +32,7 @@
 
 #include "doomtype.h"
 #include "i_picosound.h"
-#include "pico/audio_i2s.h"
+// #include "pico/audio_i2s.h" // Audio hardware disabled
 #include "pico/binary_info.h"
 #include "hardware/gpio.h"
 
@@ -65,6 +65,8 @@ struct channel_s
     int8_t decompressed[ADPCM_SAMPLES_PER_BLOCK_SIZE];
 };
 
+// Audio hardware disabled - I2S infrastructure commented out
+#if 0
 static struct audio_buffer_pool *producer_pool;
 
 static struct audio_format audio_format = {
@@ -77,6 +79,7 @@ static struct audio_buffer_format producer_format = {
         .format = &audio_format,
         .sample_stride = 4
 };
+#endif
 
 // ====== FROM ADPCM-LIB =====
 #define CLIP(data, min, max) \
@@ -106,7 +109,7 @@ static const int index_table[] = {
 };
 // =============================
 
-static void (*music_generator)(audio_buffer_t *buffer);
+// static void (*music_generator)(audio_buffer_t *buffer); // Audio hardware disabled
 
 static boolean sound_initialized = false;
 static channel_t channels[NUM_SOUND_CHANNELS];
@@ -329,81 +332,7 @@ static boolean I_Pico_SoundIsPlaying(int channel)
 
 static void I_Pico_UpdateSound(void)
 {
-    if (!sound_initialized) return;
-
-    // todo note this is called from D_Main around the game loop, which is fast enough now but may not be.
-    //  we can either poll more frequently, or use IRQ but then we have to be careful with threading (both OPL and channels)
-    // todo hopefully at least we can run the AI fast enough.
-    audio_buffer_t *buffer = take_audio_buffer(producer_pool, false);
-    if (buffer) {
-        if (music_generator) {
-            // todo think about volume; this already has a (<< 3) in it
-            music_generator(buffer);
-        } else {
-            memset(buffer->buffer->bytes, 0, buffer->buffer->size);
-        }
-        for(int ch=0; ch < NUM_SOUND_CHANNELS; ch++) {
-            if (is_channel_playing(ch)) {
-                channel_t *channel = &channels[ch];
-                assert(channel->decompressed_size);
-                int voll = channel->left/2;
-                int volr = channel->right/2;
-                uint offset_end = channel->decompressed_size * 65536;
-                assert(channel->offset < offset_end);
-                int16_t *samples = (int16_t *)buffer->buffer->bytes;
-#if SOUND_LOW_PASS
-                int alpha256 = channel->alpha256;
-                int beta256 = 256 - alpha256;
-                int sample = channel->decompressed[channel->offset >> 16];
-#endif
-                for(int s=0;s<buffer->max_sample_count;s++) {
-#if !SOUND_LOW_PASS
-                    int sample = channel->decompressed[channel->offset >> 16];
-#else
-                    // todo graham, note that since we are all at the same frequency (and it isn't the end
-                    //  of the world anyway, we could do this across all channels at once)
-                    sample = (beta256 * sample + alpha256 * channel->decompressed[channel->offset >> 16]) / 256;
-#endif
-                    *samples++ += sample * voll;
-                    *samples++ += sample * volr;
-                    channel->offset += channel->step;
-                    if (channel->offset >= offset_end) {
-                        channel->offset -= offset_end;
-                        decompress_buffer(channel);
-                        offset_end = channel->decompressed_size * 65536;
-                        if (channel->offset >= offset_end) {
-                            stop_channel(ch);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        buffer->sample_count = buffer->max_sample_count;
-        if (fade_state == FS_SILENT) {
-            memset(buffer->buffer->bytes, 0, buffer->buffer->size);
-        } else if (fade_state != FS_NONE) {
-            int16_t *samples = (int16_t *)buffer->buffer->bytes;
-            int fade_step = fade_state == FS_FADE_IN ? FADE_STEP : -FADE_STEP;
-            int i;
-            for(i=0;i<buffer->sample_count * 2 && fade_level;i+=2) {
-                samples[i] = (samples[i] * (int)fade_level) >> 16;
-                samples[i+1] = (samples[i+1] * (int)fade_level) >> 16;
-                fade_level += fade_step;
-            }
-            if (!fade_level) {
-                if (fade_state == FS_FADE_OUT) {
-                    for(;i<buffer->sample_count * 2;i++) {
-                        samples[i] = 0;
-                    }
-                    fade_state = FS_SILENT;
-                } else {
-                    fade_state = FS_NONE;
-                }
-            }
-        }
-        give_audio_buffer(producer_pool, buffer);
-    }
+    // Audio hardware disabled - no I2S output
 }
 
 static void I_Pico_ShutdownSound(void)
@@ -417,38 +346,10 @@ static void I_Pico_ShutdownSound(void)
 
 static boolean I_Pico_InitSound(boolean _use_sfx_prefix)
 {
-    int i;
     use_sfx_prefix = _use_sfx_prefix;
-
-    // todo this will likely need adjustment - maybe with IRQs/double buffer & pull from audio we can make it quite small
-    producer_pool = audio_new_producer_pool(&producer_format, 2, 1024); // todo correct size
-
-    struct audio_i2s_config config = {
-            .data_pin = PICO_AUDIO_I2S_DATA_PIN,
-            .clock_pin_base = PICO_AUDIO_I2S_CLOCK_PIN_BASE,
-            .dma_channel = 6,
-            .pio_sm = 0,
-    };
-
-    const struct audio_format *output_format;
-    output_format = audio_i2s_setup(&audio_format, &config);
-    if (!output_format) {
-        panic("PicoAudio: Unable to open audio device.\n");
-    }
-
-#if INCREASE_I2S_DRIVE_STRENGTH
-    bi_decl(bi_program_feature("12mA I2S"));
-    gpio_set_drive_strength(PICO_AUDIO_I2S_DATA_PIN, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE, GPIO_DRIVE_STRENGTH_12MA);
-    gpio_set_drive_strength(PICO_AUDIO_I2S_CLOCK_PIN_BASE+1, GPIO_DRIVE_STRENGTH_12MA);
-#endif
-    // we want to pass thr
-    bool ok = audio_i2s_connect_extra(producer_pool, false, 0, 0, NULL);
-    assert(ok);
-    audio_i2s_set_enabled(true);
-
-    sound_initialized = true;
-    return true;
+    // Audio hardware disabled - no I2S output
+    sound_initialized = false;
+    return false;
 }
 
 static snddevice_t sound_pico_devices[] =
@@ -476,7 +377,7 @@ bool I_PicoSoundIsInitialized(void) {
 }
 
 void I_PicoSoundSetMusicGenerator(void (*generator)(audio_buffer_t *buffer)) {
-    music_generator = generator;
+    // Audio hardware disabled - music generator not used
 }
 
 #if PICO_ON_DEVICE

@@ -184,6 +184,7 @@ void R_ExecuteSetViewSize (void);
 boolean D_Display (void)
 {
 #if PICO_DOOM
+    hdmi_diag_boot_marker_set(11);
     pd_begin_frame();
 #endif
 
@@ -567,6 +568,9 @@ void D_DoomLoop (void)
 
     while (1)
     {
+#if PICO_DOOM
+        hdmi_diag_doomloop_count++;
+#endif
         D_RunFrame();
 #if PICO_DOOM_INFO
         static uint8_t x = 0;
@@ -1328,6 +1332,9 @@ static void G_CheckDemoStatusAtExit (void)
 //
 void D_DoomMain (void)
 {
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(4);
+#endif
     int p;
     char file[256];
     char demolumpname[9];
@@ -1578,6 +1585,9 @@ void D_DoomMain (void)
     D_AddFile("");
 #endif
     int numiwadlumps = numlumps;
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(5);
+#endif
 
 #if !DOOM_TINY
     W_CheckCorrectIWAD(doom);
@@ -1697,6 +1707,9 @@ void D_DoomMain (void)
 #if !DOOM_TINY
     // Load PWAD files.
     modifiedgame = W_ParseCommandLine();
+#endif
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(6);
 #endif
 
     // Debug:
@@ -1869,8 +1882,18 @@ void D_DoomMain (void)
 #if !NO_USE_JOYSTICK
     I_InitJoystick();
 #endif
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(7);
+#endif
+#if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 2
+    // Diagnostic mode: skip audio init to rule out sound bring-up stalls.
+#else
     I_InitSound(true);
     I_InitMusic();
+#endif
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(8);
+#endif
 
 #if !NO_USE_NET
     printf ("NET_Init: Init network subsystem.\n");
@@ -2046,6 +2069,9 @@ void D_DoomMain (void)
 
     DEH_printf("S_Init: Setting up sound.\n");
     S_Init (sfxVolume * 8, musicVolume * 8);
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(9);
+#endif
 
 #if !USE_PICO_NET
     DEH_printf("D_CheckNetGame: Checking network game status.\n");
@@ -2096,6 +2122,9 @@ void D_DoomMain (void)
     {
 	singledemo = true;              // quit after one demo
 	G_DeferedPlayDemo (demolumpname);
+#if PICO_DOOM
+        hdmi_diag_boot_marker_set(10);
+#endif
 	D_DoomLoop ();  // never returns
     }
 
@@ -2103,6 +2132,9 @@ void D_DoomMain (void)
     if (p)
     {
 	G_TimeDemo (demolumpname);
+#if PICO_DOOM
+        hdmi_diag_boot_marker_set(10);
+#endif
 	D_DoomLoop ();  // never returns
     }
 #endif
@@ -2123,6 +2155,8 @@ void D_DoomMain (void)
 	    D_StartTitle ();                // start up intro loop
     }
 
+ #if PICO_DOOM
+    hdmi_diag_boot_marker_set(10);
+ #endif
     D_DoomLoop ();  // never returns
 }
-

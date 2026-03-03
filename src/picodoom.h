@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 #include "m_fixed.h"
+#include <stdint.h>
 
 typedef enum {
     PDCOL_NONE = 0,
@@ -19,6 +20,9 @@ typedef enum {
 } pd_column_type;
 
 extern volatile uint8_t interp_in_use;
+void hdmi_diag_boot_marker_set(uint32_t value);
+uint32_t hdmi_diag_boot_marker_get(void);
+void hdmi_diag_service_video_handoff(void);
 void pd_init();
 void pd_core1_loop();
 void pd_begin_frame();
@@ -34,6 +38,13 @@ const uint8_t *get_end_of_flash(void);
 #endif
 extern int pd_flag;
 extern fixed_t pd_scale;
+extern volatile uint32_t hdmi_diag_main_before_doommain_count;
+extern volatile uint32_t hdmi_diag_doommain_entry_count;
+extern volatile uint32_t hdmi_diag_doommain_after_winit_count;
+extern volatile uint32_t hdmi_diag_doomloop_count;
+extern volatile uint32_t hdmi_diag_pd_begin_count;
+extern volatile uint32_t hdmi_diag_pd_endframe_count;
+extern volatile uint32_t hdmi_diag_pd_publish_count;
 #ifdef __cplusplus
 }
 #endif

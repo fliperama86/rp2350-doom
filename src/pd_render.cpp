@@ -32,10 +32,18 @@ extern "C" {
 }
 // todo compare with and without
 #define USE_XIPCPY 0
-#if PICO_ON_DEVICE
+// Core 1 is reserved for HDMI output — all rendering on Core 0.
+#define USE_CORE1_RENDER 0
+#if USE_CORE1_RENDER && PICO_ON_DEVICE
 #define USE_CORE1_FOR_FLATS 1
+#else
+#define USE_CORE1_FOR_FLATS 0
 #endif
+#if USE_CORE1_RENDER
 #define USE_CORE1_FOR_REGULAR 1
+#else
+#define USE_CORE1_FOR_REGULAR 0
+#endif
 #ifdef PICO_SPINLOCK_ID_OS2
 #define RENDER_SPIN_LOCK PICO_SPINLOCK_ID_OS2
 #else
@@ -166,6 +174,13 @@ typedef unsigned int uint;
 int pd_frame;
 int pd_flag;
 fixed_t pd_scale;
+volatile uint32_t hdmi_diag_main_before_doommain_count;
+volatile uint32_t hdmi_diag_doommain_entry_count;
+volatile uint32_t hdmi_diag_doommain_after_winit_count;
+volatile uint32_t hdmi_diag_doomloop_count;
+volatile uint32_t hdmi_diag_pd_begin_count;
+volatile uint32_t hdmi_diag_pd_endframe_count;
+volatile uint32_t hdmi_diag_pd_publish_count;
 
 extern uint8_t __aligned(4) frame_buffer[2][SCREENWIDTH * MAIN_VIEWHEIGHT];
 static uint8_t __aligned(4) visplane_bit[(SCREENWIDTH / 8) * MAIN_VIEWHEIGHT]; // this is also used for patch decoding in core1 (since flats are done by then)
@@ -274,6 +289,8 @@ static void SafeUpdateSound() {
         interp_in_use = true;
     }
     I_UpdateSound();
+    // While waiting in core1 render sync loops, keep the video handoff path alive.
+    hdmi_diag_service_video_handoff();
     if (get_core_num()) {
         interp_in_use = save;
     }
@@ -763,6 +780,7 @@ static void push_down_x(int x, int new_index) {
 }
 
 void pd_begin_frame() {
+    hdmi_diag_pd_begin_count++;
     DEBUG_PINS_SET(start_end, 1);
     if (gamestate == GS_LEVEL) {
 //        render_frame_index ^= 1;
@@ -771,7 +789,9 @@ void pd_begin_frame() {
 #if 0 && !PICO_ON_DEVICE
     printf("BEGIN FRAME %d rfb %p\n", render_frame_index, render_frame_buffer);
 #endif
+#if USE_CORE1_RENDER
     sem_release(&core1_wake);
+#endif
 
     reset_framedrawables();
 #if !PICO_ON_DEVICE
@@ -2595,6 +2615,7 @@ static void uh_oh_discard_columns(int render_col_limit) {
 }
 void pd_end_frame(int wipe_start) {
     DEBUG_PINS_SET(start_end, 2);
+    hdmi_diag_pd_endframe_count++;
 #if !PICO_ON_DEVICE
 //    tex_count.record_print(textures.size());
 //    patch_count.record_print(patches.size());
@@ -2792,8 +2813,10 @@ void pd_end_frame(int wipe_start) {
         draw_cast_sprite(sprite_lump);
     }
 #endif
+#if USE_CORE1_RENDER
     sem_release(&core0_done);
     sem_acquire_blocking(&core1_done);
+#endif
     draw_fuzz_columns();
     DEBUG_PINS_CLR(full_render, 1);
     NetUpdate();
@@ -2958,13 +2981,19 @@ void pd_end_frame(int wipe_start) {
 #if 0 && !PICO_ON_DEVICE
     printf("GS %d vt %d fi %d\n", gamestate, next_video_type, next_frame_index);
 #endif
+    hdmi_diag_pd_publish_count++;
+    hdmi_diag_boot_marker_set(12);
     sem_release(&render_frame_ready);
     DEBUG_PINS_CLR(start_end, 2);
 }
 
 void pd_core1_loop() {
 #if PICO_ON_DEVICE
-    sem_acquire_blocking(&core1_wake);
+    // Do not block here: this function is called from the HDMI background
+    // task, which must keep running so frame handoff can progress.
+    if (!sem_acquire_timeout_ms(&core1_wake, 0)) {
+        return;
+    }
 #if USE_CORE1_FOR_FLATS
     while (!sem_acquire_timeout_ms(&core1_do_flats, 1)) {
         SafeUpdateSound();
@@ -3003,6 +3032,7 @@ void pd_start_save_pause(void) {
         draw_stbar_on_framebuffer(render_frame_index ^ 1, false);
     }
     next_video_type = VIDEO_TYPE_SAVING;
+    hdmi_diag_pd_publish_count++;
     sem_release(&render_frame_ready);
     // need to be sure we've picked up the change
     while (!sem_available(&display_frame_freed)) {
@@ -3013,6 +3043,7 @@ void pd_start_save_pause(void) {
 
 void pd_end_save_pause(void) {
     next_video_type = old_video_type;
+    hdmi_diag_pd_publish_count++;
     sem_release(&render_frame_ready);
     I_PicoSoundFade(true);
     while (I_PicoSoundFading()) {

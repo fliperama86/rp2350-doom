@@ -465,11 +465,7 @@ void I_BindInputVariables(void)
     M_BindIntVariable("novert",                    &novert);
 }
 
-#if PICO_NO_HARDWARE
-#include "pico/scanvideo.h"
-#else
 #define WITH_SHIFT 0x8000
-#endif
 
 static void pico_key_down(int scancode, int keysym, int modifiers) {
     event_t event;

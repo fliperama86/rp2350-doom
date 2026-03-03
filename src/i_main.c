@@ -39,7 +39,11 @@
 #endif
 #include "doomtype.h"
 #include "i_system.h"
+#include "i_video.h"
 #include "m_argv.h"
+#if PICO_DOOM
+#include "picodoom.h"
+#endif
 #if PICO_RP2350
 #include "hardware/structs/qmi.h"
 #endif
@@ -53,7 +57,6 @@ void D_DoomMain (void);
 
 #if PICO_ON_DEVICE
 #include "pico/binary_info.h"
-bi_decl(bi_3pins_with_names(PICO_AUDIO_I2S_DATA_PIN, "I2S DIN", PICO_AUDIO_I2S_CLOCK_PIN_BASE, "I2S BCK", PICO_AUDIO_I2S_CLOCK_PIN_BASE+1, "I2S LRCK"));
 #endif
 
 int main(int argc, char **argv)
@@ -77,7 +80,7 @@ int main(int argc, char **argv)
     vreg_set_voltage(VREG_VOLTAGE_1_30);
     busy_wait_us(1000);
     // todo pause? is this the cause of the cold start issue?
-    set_sys_clock_khz(270000, true);
+    set_sys_clock_khz(252000, true);
 #if !USE_PICO_NET
     // debug ?
 //    gpio_debug_pins_init();
@@ -91,8 +94,24 @@ int main(int argc, char **argv)
 #if LIB_PICO_STDIO
     stdio_init_all();
 #endif
+#if PICO_ON_DEVICE && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 2
+    // Stage 2+3 diagnostics: bring up HDMI immediately so pre-render stalls are visible.
+    I_InitGraphics();
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(1);
+#endif
+#endif
+#if PICO_ON_DEVICE && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE == 1
+    // Stage 1 diagnostics: bring up HDMI immediately and render bars only.
+    while (1) {
+        tight_loop_contents();
+    }
+#endif
 #if PICO_BUILD
     I_Init();
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(2);
+#endif
 #endif
 #if USE_PICO_NET
     // do init early to set pulls
@@ -115,9 +134,10 @@ int main(int argc, char **argv)
     #endif
 
     // start doom
-
+#if PICO_DOOM
+    hdmi_diag_boot_marker_set(3);
+#endif
     D_DoomMain ();
 
     return 0;
 }
-

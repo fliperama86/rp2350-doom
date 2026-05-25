@@ -59,6 +59,7 @@
 #include "i_system.h"
 #include "i_timer.h"
 #include "i_video.h"
+#include "i_sound.h"
 
 #include "g_game.h"
 
@@ -95,6 +96,19 @@
 //  calls I_GetTime, I_StartFrame, and I_StartTic
 //
 void D_DoomLoop (void);
+
+#if PICO_DOOM
+static void PicoFreezeForHdmiDiag(int point)
+{
+    if (PICODOOM_FREEZE_POINT == point)
+    {
+        for (;;)
+        {
+            __asm volatile ("nop");
+        }
+    }
+}
+#endif
 
 // Location where savegames are stored
 
@@ -222,6 +236,10 @@ boolean D_Display (void)
     else
 	wipe = false;
 
+#if PICO_DOOM && defined(PICODOOM_SKIP_WIPES) && PICODOOM_SKIP_WIPES
+    wipe = false;
+#endif
+
 #if DOOM_TINY
     // we only redraw briefly during wipe
     if (!wipestate || wipestate == WIPESTATE_REDRAW1) {
@@ -268,13 +286,22 @@ boolean D_Display (void)
     // draw the view directly
 #if !DOOM_TINY
     if (gamestate == GS_LEVEL && !automapactive && gametic)
+        R_RenderPlayerView (&players[displayplayer]);
 #else
     // not sure what the reason for not drawing when gametic == 0 (i.e. the first frame of the game), however it means we
     // don't draw anything in a network game until the sync is done, which screws up what we see during the wipe. I haven't
     // seen any downside to doing the drawing.
     if (gamestate == GS_LEVEL && !automapactive)
+    {
+#if PICO_DOOM
+        PicoFreezeForHdmiDiag(2);
 #endif
-	    R_RenderPlayerView (&players[displayplayer]);
+        R_RenderPlayerView (&players[displayplayer]);
+#if PICO_DOOM
+        PicoFreezeForHdmiDiag(3);
+#endif
+    }
+#endif
 
 #if !DOOM_TINY
     if (gamestate == GS_LEVEL && gametic)
@@ -348,12 +375,30 @@ boolean D_Display (void)
 
 #if PICO_DOOM
     pd_end_frame(wipe);
+    PicoFreezeForHdmiDiag(12);
 #else
 
     // menus go directly to the screen
     M_Drawer ();          // menu is drawn even on top of everything
 #endif
     NetUpdate ();         // send out any new accumulation
+#if PICO_DOOM
+    PicoFreezeForHdmiDiag(13);
+#if PICODOOM_IDLE_AFTER_FIRST_DISPLAY
+    static boolean pico_idle_after_first_display;
+    if (gamestate == GS_LEVEL && !pico_idle_after_first_display)
+    {
+        pico_idle_after_first_display = true;
+        for (;;)
+        {
+            I_UpdateSound();
+#if USB_SUPPORT
+            tuh_task();
+#endif
+        }
+    }
+#endif
+#endif
 
     return wipe;
 }
@@ -2149,10 +2194,15 @@ void D_DoomMain (void)
 
     if (gameaction != ga_loadgame )
     {
+#if PICO_DOOM && defined(PICODOOM_BOOT_TO_E1M1) && PICODOOM_BOOT_TO_E1M1
+        G_InitNew(sk_medium, 1, 1);
+        PicoFreezeForHdmiDiag(1);
+#else
 	if (autostart || netgame)
 	    G_InitNew (startskill, startepisode, startmap);
 	else
 	    D_StartTitle ();                // start up intro loop
+#endif
     }
 
  #if PICO_DOOM

@@ -86,7 +86,12 @@ statsomizer patch_decoder_size("patch decoder size");
 #if PICO_ON_DEVICE
 
 #include "hardware/interp.h"
+#include "pico/time.h"
 
+#endif
+
+#ifndef PICODOOM_FRAME_CAP_FPS
+#define PICODOOM_FRAME_CAP_FPS 0
 #endif
 
 extern "C" {
@@ -96,6 +101,9 @@ extern "C" {
 #include "w_wad.h"
 #include "z_zone.h"
 #include "doom/r_plane.h"
+#if USB_SUPPORT
+#include "tusb.h"
+#endif
 void I_UpdateSound(void);
 }
 void draw_cast_sprite(int sprite_lump);
@@ -183,6 +191,9 @@ volatile uint32_t hdmi_diag_pd_endframe_count;
 volatile uint32_t hdmi_diag_pd_publish_count;
 
 extern uint8_t __aligned(4) frame_buffer[2][SCREENWIDTH * MAIN_VIEWHEIGHT];
+#if PICO_DOOM && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
+extern uint8_t __aligned(4) hdmi_status_buffer[SCREENWIDTH * 32];
+#endif
 static uint8_t __aligned(4) visplane_bit[(SCREENWIDTH / 8) * MAIN_VIEWHEIGHT]; // this is also used for patch decoding in core1 (since flats are done by then)
 static int8_t flatnum_first[256];
 
@@ -302,6 +313,43 @@ static bool column_is_psprite(const pd_column &c) {
 
 static bool column_is_nil(const pd_column &c) {
     return c.yl > c.yh || c.yh == 255;
+}
+
+static void PicoFreezeForHdmiDiag(int point) {
+#if PICO_DOOM
+    if (PICODOOM_FREEZE_POINT == point) {
+        for (;;) {
+            __asm volatile ("nop");
+        }
+    }
+#else
+    (void) point;
+#endif
+}
+
+static inline void PicoRenderThrottle(void) {
+#if PICO_ON_DEVICE && PICODOOM_RENDER_THROTTLE_US
+    busy_wait_us_32(PICODOOM_RENDER_THROTTLE_US);
+#endif
+}
+
+static void PicoFrameCapWait(void) {
+#if PICO_ON_DEVICE && PICODOOM_FRAME_CAP_FPS
+    static uint32_t last_frame_us;
+    const uint32_t frame_us = 1000000u / PICODOOM_FRAME_CAP_FPS;
+    uint32_t now = time_us_32();
+    if (last_frame_us) {
+        while ((uint32_t)(now - last_frame_us) < frame_us) {
+            I_UpdateSound();
+#if USB_SUPPORT
+            tuh_task();
+#endif
+            busy_wait_us_32(250);
+            now = time_us_32();
+        }
+    }
+    last_frame_us = now;
+#endif
 }
 
 const char *type_name(pd_column column) {
@@ -1175,6 +1223,7 @@ static int16_t predraw_visplanes() {
                 i = c.next;
             }
         }
+        if ((x & 7) == 7) PicoRenderThrottle();
     }
     return free_list;
 }
@@ -1257,6 +1306,7 @@ static uint8_t *decode_flat_to_slot(int cache_slot, int picnum) {
         uint8_t *p = flat_data;
         for (int y = 0; y < 4096; y++) {
             *p++ = th_decode_table_special(rp_decoder, flat_decoder_tmp, &bi);
+            if ((y & 255) == 255) PicoRenderThrottle();
         }
     } else {
         for (int x = 0; x < 64; x++) {
@@ -1274,6 +1324,7 @@ static uint8_t *decode_flat_to_slot(int cache_slot, int picnum) {
                     *p++ = th_decode_table_special(rp_decoder, flat_decoder_tmp, &bi);
                 }
             }
+            if ((x & 7) == 7) PicoRenderThrottle();
 
         }
     }
@@ -1361,6 +1412,7 @@ static void flush_visplanes(int8_t *flatnum_next, int numvisplanes) {
                     uint32_t step;
                     uint32_t position;
 #endif
+                    int render_run_count = 0;
                     for (int16_t fr = visplane_heads[vp]; fr != -1; fr = flat_runs[fr].next) {
                         int delta;
                         if (flat_runs[fr].y != last_y) {
@@ -1451,6 +1503,7 @@ static void flush_visplanes(int8_t *flatnum_next, int numvisplanes) {
                             *p++ = colormap[*texel];
 #pragma GCC diagnostic pop
                         }
+                        if ((++render_run_count & 7) == 0) PicoRenderThrottle();
 //                        last_x_end = flat_runs[fr].x_end;
                     }
                     vp = flatnum_next[vp];
@@ -1561,6 +1614,7 @@ static void draw_visplanes(int16_t fr_list) {
             visplane_heads[plane_num] = fr_pos;
             fr_pos = tmp;
         }
+        PicoRenderThrottle();
     }
     if (fr_pos != fr_list) {
         flush_visplanes(flatnum_next, numvisplanes);
@@ -1971,6 +2025,7 @@ static void draw_patch_columns(int patch_num, int patch_head, int16_t *col_heads
                 } while (i != -1);
             }
         }
+        if ((col & 15) == 15) PicoRenderThrottle();
     }
 }
 
@@ -2295,6 +2350,7 @@ static void draw_composite_columns(int texture_num, int tex_head) {
     #endif
 
                     }
+                    if ((col & 15) == 15) PicoRenderThrottle();
                 }
     #endif
             } else {
@@ -2332,6 +2388,7 @@ static void __noinline draw_regular_columns(int core) {
                 DEBUG_PINS_SET(render_thing, 1<<core);
                 draw_composite_columns(framedrawables[fd_num].real_id, i);
                 DEBUG_PINS_CLR(render_thing, 1<<core);
+                PicoRenderThrottle();
             }
         }
     }
@@ -2366,6 +2423,7 @@ static void __noinline draw_regular_columns(int core) {
                 }
                 draw_patch_columns(-id, i, (int16_t*)buffer, buffer + WHD_PATCH_MAX_WIDTH * 2, translated);
                 DEBUG_PINS_CLR(render_thing, 1<<core);
+                PicoRenderThrottle();
             }
         }
     }
@@ -2400,6 +2458,7 @@ static void draw_fuzz_columns() {
             }
             i = c.next;
         }
+        if ((x & 15) == 15) PicoRenderThrottle();
     }
 }
 
@@ -2499,6 +2558,21 @@ void draw_stbar_on_framebuffer(int frame, boolean refresh) {
     V_DrawPatchList(vpatchlists->framebuffer);
     I_VideoBuffer = render_frame_buffer;
 }
+
+#if PICO_DOOM && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
+static void draw_stbar_on_hdmi_status_buffer(boolean refresh) {
+    V_BeginPatchList(vpatchlists->framebuffer);
+    ST_drawWidgets(refresh);
+    I_VideoBuffer = (pixel_t *) ((uintptr_t) hdmi_status_buffer - MAIN_VIEWHEIGHT * SCREENWIDTH);
+    V_RestoreBuffer();
+    vpatch_clip_top = MAIN_VIEWHEIGHT;
+    vpatch_clip_bottom = SCREENHEIGHT;
+    V_DrawPatchList(vpatchlists->framebuffer);
+    vpatch_clip_top = 0;
+    vpatch_clip_bottom = SCREENHEIGHT;
+    I_VideoBuffer = render_frame_buffer;
+}
+#endif
 
 static void draw_framebuffer_patches_fullscreen() {
     V_RestoreBuffer();
@@ -2616,6 +2690,11 @@ static void uh_oh_discard_columns(int render_col_limit) {
 void pd_end_frame(int wipe_start) {
     DEBUG_PINS_SET(start_end, 2);
     hdmi_diag_pd_endframe_count++;
+    static bool publish_first_frame_done;
+    bool suppress_frame_publish = false;
+#if PICO_DOOM && PICODOOM_PUBLISH_FIRST_FRAME_ONLY
+    suppress_frame_publish = publish_first_frame_done;
+#endif
 #if !PICO_ON_DEVICE
 //    tex_count.record_print(textures.size());
 //    patch_count.record_print(patches.size());
@@ -2631,7 +2710,9 @@ void pd_end_frame(int wipe_start) {
     }
 //    gpio_put(22, 0);
 #endif
-    sem_acquire_blocking(&display_frame_freed);
+    if (!suppress_frame_publish) {
+        sem_acquire_blocking(&display_frame_freed);
+    }
     bool showing_help = inhelpscreens;
     static boolean was_in_help;
     if (gamestate == GS_LEVEL) {
@@ -2644,6 +2725,7 @@ void pd_end_frame(int wipe_start) {
 #if 0 && !PICO_ON_DEVICE
     printf("END FRAME %d %p ws %d cols %d\n", render_frame_index, render_frame_buffer, wipe_start, render_col_count);
 #endif
+    PicoFreezeForHdmiDiag(4);
 
     DEBUG_PINS_SET(full_render, 1);
 
@@ -2782,7 +2864,7 @@ void pd_end_frame(int wipe_start) {
                 for (int j = 0; j < 32; j++) {
                     if (not_fully_covered_cols[i] & (1u << j)) {
                         uint32_t *dest = (uint32_t *) (render_frame_buffer + i * 4 * 32 + j * 4 +
-                                                       not_fully_covered_yl * SCREENHEIGHT);
+                                                       not_fully_covered_yl * SCREENWIDTH);
                         for (int y = not_fully_covered_yl; y <= not_fully_covered_yh; y++, dest += SCREENWIDTH / 4) {
                             *dest = 0;
                         }
@@ -2792,7 +2874,9 @@ void pd_end_frame(int wipe_start) {
         }
     }
     // render the visplane identifiers, freeing up the visplane columns (which we will use below)
+    PicoFreezeForHdmiDiag(5);
     int16_t fr_list = predraw_visplanes();
+    PicoFreezeForHdmiDiag(6);
 
     // ... now we can be parallel
 #if !USE_CORE1_FOR_FLATS
@@ -2801,11 +2885,13 @@ void pd_end_frame(int wipe_start) {
     core1_fr_list = fr_list;
     sem_release(&core1_do_flats);
 #endif
+    PicoFreezeForHdmiDiag(7);
     re_sort_regular_columns_by_fd_num();
 #if USE_CORE1_FOR_REGULAR
     sem_release(&core1_do_regular);
 #endif
     draw_regular_columns(0);
+    PicoFreezeForHdmiDiag(8);
 #if !DEMO1_ONLY
     if (gamestate == GS_FINALE && finalestage == F_STAGE_CAST && !wipestate) {
         // note we do this before core0_done so core1 is still playing music
@@ -2820,6 +2906,7 @@ void pd_end_frame(int wipe_start) {
     draw_fuzz_columns();
     DEBUG_PINS_CLR(full_render, 1);
     NetUpdate();
+    PicoFreezeForHdmiDiag(9);
 
     if (gamestate == GS_FINALE) {
         V_BeginPatchList(vpatchlists->framebuffer);
@@ -2966,6 +3053,11 @@ void pd_end_frame(int wipe_start) {
         V_RestoreBuffer();
         V_DrawPatchList(vpatchlists->framebuffer);
     }
+#if PICO_DOOM && PICODOOM_HDMI_DIAG_STAGE >= 3
+    if (gamestate == GS_LEVEL && !wipestate && !inhelpscreens) {
+        draw_stbar_on_hdmi_status_buffer(false);
+    }
+#endif
     if (pre_wipe_state == PRE_WIPE_EXTRA_FRAME_NEEDED) {
         pre_wipe_state = PRE_WIPE_EXTRA_FRAME_DONE;
     }
@@ -2981,9 +3073,17 @@ void pd_end_frame(int wipe_start) {
 #if 0 && !PICO_ON_DEVICE
     printf("GS %d vt %d fi %d\n", gamestate, next_video_type, next_frame_index);
 #endif
-    hdmi_diag_pd_publish_count++;
-    hdmi_diag_boot_marker_set(12);
-    sem_release(&render_frame_ready);
+    if (!suppress_frame_publish) {
+        hdmi_diag_pd_publish_count++;
+        hdmi_diag_boot_marker_set(12);
+        PicoFreezeForHdmiDiag(10);
+        sem_release(&render_frame_ready);
+#if PICO_DOOM && PICODOOM_PUBLISH_FIRST_FRAME_ONLY
+        publish_first_frame_done = true;
+#endif
+        PicoFreezeForHdmiDiag(11);
+    }
+    PicoFrameCapWait();
     DEBUG_PINS_CLR(start_end, 2);
 }
 

@@ -480,6 +480,42 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
   (~35.6 KB with sound enabled; cp=99 breadcrumb), Core 1 stack (8 KB, now
   also carries printf/snprintf/compose).
 
+### Audio distortion hunt (2026-06-11, post-release) — RESOLVED
+E1M1 music sounded metallic/distorted. The pure-sine discriminator
+(`PICODOOM_HDMI_AUDIO_TEST_TONE=3`, 750 Hz) + spectral analysis of phone
+recordings (`ffmpeg` + scipy: welch/periodogram/spectrogram) isolated and
+fixed THREE stacked transport defects (per-packet encoding was audited
+clean on host — /tmp/cs_audit.c):
+1. **Silence packet asserted the IEC block-start flag** (encoded with
+   frame_count=0): every underrun insertion reset the sink's channel-status
+   sync. Fixed (mid-block frame_count) + counted
+   (`hstx_di_queue_silence_count`, SL on overlay).
+2. **Ahead-of-beam compose starved by Core 1 background stalls**: every
+   per-frame section longer than the ring's 2.5 ms lead (frame init,
+   rebuild tail, canvas redraw, and a 7 ms once-per-second printf = an
+   audible 1 Hz bip) staled entries and dropped their packets — measured as
+   ±60 Hz sidebands around a perfect 750 Hz carrier, ST ~7 lines/frame.
+   Fixed ARCHITECTURALLY: headers are static and built once; the scanline
+   ISR pops pre-encoded islands from the di queue and patches 36 words into
+   the line being posted (~1.5 µs). Audio pacing lives in the ISR; the
+   background task can no longer starve it. All runtime serial diagnostics
+   removed (overlay only).
+3. **Active-lines-only delivery**: pacing audio over the 480 active lines
+   left a 45-line (1.4 ms) hole every vblank — 60 Hz delivery duty cycle
+   the sink resamples around (Morph4K SF CS flipped 48/44.1; carrier
+   wandered 644-785 Hz). Fixed: per-line tick restored for all 525 lines,
+   islands patched into ping/pong blanking templates too — identical
+   delivery shape to the demos that play cleanly.
+**Result: user-confirmed CLEAN sine.** Lesson: square-wave test tones mask
+dropped/repeated-sample artifacts — always validate audio transports with
+a pure sine + spectrum analysis of a recording.
+
+KNOWN REMAINING (separate, mild): emu8950 with EMU8950_NO_RATECONV ignores
+the requested rate and outputs chip-native 49716 Hz; played at 48 kHz the
+music is ~3.45% flat/slow. Fix candidates: feed OPL_calc through a simple
+49716→48000 fractional resampler in the mixer, or pace AdvanceTime in chip
+samples. Do AFTER confirming music is otherwise clean.
+
 ### Post-flawless polish backlog (do not mix into the gates)
 Tear: rebuild already starts at frame IRQ; vblank+letterbox (~2.9 ms) nearly
 covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen

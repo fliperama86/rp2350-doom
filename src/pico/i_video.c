@@ -45,6 +45,7 @@
 
 #include "pico_hdmi/video_output.h"
 #include "pico_hdmi/hstx_data_island_queue.h"
+#include "hardware/timer.h"
 #include "pico/multicore.h"
 #include "pico/sync.h"
 #include "pico/time.h"
@@ -1422,12 +1423,11 @@ static void hdmi_lite_update_diag_rows(void) {
              (unsigned long)snd_diag_zone_free,
              (unsigned long)hstx_di_queue_silence_count);
     hdmi_lite_draw_text(0, 8, line);
-    snprintf(line, sizeof line, "PB %lu CN %lu RY %d FR %d ST %lu",
+    snprintf(line, sizeof line, "PB %lu CN %lu ST %lu RS %lu",
              (unsigned long)hdmi_diag_pd_publish_count,
              (unsigned long)hdmi_diag_frameconsume_count,
-             sem_available(&render_frame_ready),
-             sem_available(&display_frame_freed),
-             (unsigned long)video_output_precomposed_stale_count);
+             (unsigned long)video_output_precomposed_stale_count,
+             (unsigned long)video_output_resync_count);
     hdmi_lite_draw_text(0, 16, line);
 }
 
@@ -1613,6 +1613,23 @@ static void core1_background_task(void) {
         // else this task does (measured as a 1 Hz audio glitch before the
         // ISR took over the island schedule).
         hdmi_lite_update_diag_rows();
+    }
+    // Frame-pacing watchdog: a desynced HSTX command stream makes scanlines
+    // "complete" at bus speed (observed: LED heartbeat speeding up after a
+    // sync drop). >12 vsyncs in a 100 ms window (expected: 6) = desync;
+    // restart the scanout. Costs the sink a brief relock, not a power cycle.
+    {
+        static uint32_t rs_window_us;
+        static uint32_t rs_last_vsync_count;
+        uint32_t now = time_us_32();
+        if ((int32_t)(now - rs_window_us) >= 100000) {
+            uint32_t n = hdmi_diag_vsync_count - rs_last_vsync_count;
+            rs_last_vsync_count = hdmi_diag_vsync_count;
+            rs_window_us = now;
+            if (n > 12) {
+                video_output_force_resync();
+            }
+        }
     }
 #endif
     hdmi_diag_service_video_handoff();

@@ -36,10 +36,6 @@
 #include "pico/binary_info.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
-#include "hardware/timer.h"
-#include "pico/bootrom.h"
-#include "pico/stdio.h"
-#include <stdio.h>
 
 #define ADPCM_BLOCK_SIZE 128
 #define ADPCM_SAMPLES_PER_BLOCK_SIZE 249
@@ -429,32 +425,6 @@ static void mix_one_chunk(void)
 static void I_Pico_UpdateSound(void)
 {
     if (!sound_initialized) return;
-
-#if PICO_ON_DEVICE
-    // UART backdoor into BOOTSEL (USB runs in host mode, picotool can't):
-    // send the two bytes 0x02 'B' (Ctrl-B, B) to the stdio UART.
-    {
-        static int prev_ch = -1;
-        int ch_in = getchar_timeout_us(0);
-        if (ch_in >= 0) {
-            if (prev_ch == 0x02 && ch_in == 'B') {
-                reset_usb_boot(0, 0);
-            }
-            prev_ch = ch_in;
-        }
-    }
-    // Once per ~5s over UART: is the mixer producing and is HDMI draining?
-    {
-        static uint32_t next_report_us;
-        uint32_t now = time_us_32();
-        if ((int32_t)(now - next_report_us) >= 0) {
-            next_report_us = now + 5000000u;
-            printf("audio ring: mixed=%u pulled=%u music=%d\n",
-                   (unsigned)audio_ring_head, (unsigned)audio_ring_tail,
-                   music_generator != NULL);
-        }
-    }
-#endif
 
     // Top up the ring; the HDMI side drains exactly 800 pairs per 60 Hz frame.
     hdmi_diag_checkpoint = 60;

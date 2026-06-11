@@ -1602,24 +1602,11 @@ static void core1_background_task(void) {
 #endif
 #if PICODOOM_HDMI_LITE
     if (hdmi_vsync_pending) {
+        // On-screen telemetry only. NO printf anywhere on Core 1: a single
+        // UART line blocks ~7 ms on the stdio path and starves everything
+        // else this task does (measured as a 1 Hz audio glitch before the
+        // ISR took over the island schedule).
         hdmi_lite_update_diag_rows();
-        // Once per second over stdio (USB CDC in the diag build): survives a
-        // video sync drop, so the telemetry keeps flowing afterwards.
-        static uint32_t lite_report_frames;
-        if (++lite_report_frames >= 60) {
-            lite_report_frames = 0;
-            extern volatile uint32_t hdmi_diag_checkpoint;
-            printf("LITE fe=%u fl=%u st=%u vs=%u pub=%u con=%u mix=%u pull=%u cp=%u\n",
-                   (unsigned)hdmi_lite_fifo_empty_events,
-                   (unsigned)hdmi_lite_fifo_min_level,
-                   (unsigned)video_output_precomposed_stale_count,
-                   (unsigned)hdmi_diag_vsync_count,
-                   (unsigned)hdmi_diag_pd_publish_count,
-                   (unsigned)hdmi_diag_frameconsume_count,
-                   (unsigned)I_PicoSoundMixedCount(),
-                   (unsigned)I_PicoSoundPulledCount(),
-                   (unsigned)hdmi_diag_checkpoint);
-        }
     }
 #endif
     hdmi_diag_service_video_handoff();

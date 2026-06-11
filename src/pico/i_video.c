@@ -1671,8 +1671,10 @@ static void core1() {
     // never fully stale out.
     video_output_set_compose_ring((video_output_precomposed_line_t *)HDMI_LITE_COMPOSE_RING_ADDR,
                                   HDMI_LITE_COMPOSE_RING_ENTRIES);
-    // All audio rides the 480 active lines: 800 samples/frame.
-    hstx_di_queue_set_samples_per_line_fp((800u << 16) / 480u);
+    // Audio pacing: the library default (48 kHz over all 525 lines, set by
+    // configure_audio_packets) is correct -- packets must be spread across
+    // blanking too. Pacing over only the 480 active lines leaves a 1.4 ms
+    // delivery hole every frame = 60 Hz sidebands on everything.
 #elif PICODOOM_HDMI_SOLID_POINTER_TEST
     video_output_set_scanline_pointer_callback(hdmi_solid_pointer_callback);
 #elif PICODOOM_HDMI_LINE_RING_ACTIVE

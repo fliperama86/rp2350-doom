@@ -1402,11 +1402,11 @@ static void hdmi_lite_update_diag_rows(void) {
         extern volatile uint32_t hdmi_diag_usb_mount_count;
         extern volatile uint32_t hdmi_diag_hid_mount_count;
         extern volatile uint32_t hdmi_diag_kbd_report_count;
-        snprintf(line, sizeof line, "KB M %lu H %lu R %lu PL %lu",
+        snprintf(line, sizeof line, "KB M %lu H %lu R %lu SL %lu",
                  (unsigned long)hdmi_diag_usb_mount_count,
                  (unsigned long)hdmi_diag_hid_mount_count,
                  (unsigned long)hdmi_diag_kbd_report_count,
-                 (unsigned long)I_PicoSoundPulledCount());
+                 (unsigned long)hstx_di_queue_silence_count);
     }
 #else
     snprintf(line, sizeof line, "MX %lu PL %lu FE %lu FL %lu",
@@ -1536,7 +1536,11 @@ static void hdmi_audio_pump(void) {
 #if PICODOOM_HDMI_AUDIO_TEST_TONE
     static uint32_t tone_phase;
 #endif
-    while (hstx_di_queue_get_level() < 64) {
+    // 200 packets ~= one frame of audio cushion -- the level the demo that
+    // plays clean music keeps. 64 left underruns possible during Core 1's
+    // busy windows, and each underrun inserts a silence packet (stream
+    // stretch + grit).
+    while (hstx_di_queue_get_level() < 200) {
         audio_sample_t samples[4];
 #if PICODOOM_HDMI_AUDIO_TEST_TONE == 3
         // 750 Hz pure sine (48000/64 samples). A sine exposes every dropped,

@@ -548,6 +548,13 @@ music is ~3.45% flat/slow. Fix candidates: feed OPL_calc through a simple
 49716→48000 fractional resampler in the mixer, or pace AdvanceTime in chip
 samples. Do AFTER confirming music is otherwise clean.
 
+### Build-directory cleanup (2026-06-11)
+All historical `build-*` experiment directories (~1.1 GB) were deleted; the
+single canonical `build/` now carries the release config (see `flash.sh`).
+The "Useful Known Builds" lists in this document refer to directories that
+no longer exist — every config remains reproducible from the documented
+`PICODOOM_*` flag sets.
+
 ### v0.1.2 (2026-06-11): user-blessed release build
 `build-rel` = LITE + C OPL renderer (PICODOOM_EMU8950_ASM=0) + overlay off
 (PICODOOM_DIAG_OVERLAY=0) + throttle 0 + WHX at 0x10080000 + WASD/J/K

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
-BUILD_DIR="${ROOT}/build-min"
+BUILD_DIR="${ROOT}/build"
 WHX_FILE="${ROOT}/doom1.whx"
 WHX_ADDR="0x10042000"
 
@@ -14,22 +14,24 @@ fi
 if [[ $# -eq 1 ]]; then
     UF2_FILE="$1"
 else
-    # keep the stage consistent with our latest diagnostics
-    cmake -S "$ROOT" -B "$BUILD_DIR" \
+    # release configuration (v0.1.2 lineage): LITE HDMI+audio, C OPL
+    # renderer, no diag overlay, full speed, WHX at 0x10080000
+    cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
+        -DCMAKE_BUILD_TYPE=MinSizeRel \
+        -DPICO_BOARD=pico2 \
+        -DPICO_PLATFORM=rp2350-arm-s \
+        -DPICO_STDIO_USB=OFF -DPICO_STDIO_UART=ON \
         -DPICODOOM_HDMI_DIAG_STAGE=3 \
-        -DPICODOOM_HDMI_DVI_MODE=1 \
-        -DPICODOOM_HDMI_240P=0 \
-        -DPICODOOM_HDMI_PREPARED_SCANLINES=1 \
+        -DPICODOOM_HDMI_DVI_MODE=0 \
+        -DPICODOOM_HDMI_LITE=1 \
+        -DPICODOOM_EMU8950_ASM=0 \
+        -DPICODOOM_DIAG_OVERLAY=0 \
+        -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10080000 \
         -DPICODOOM_SKIP_WIPES=1 \
-        -DPICODOOM_BOOT_TO_E1M1=1 \
-        -DPICODOOM_FORCE_SOLID_SCANOUT=0 \
-        -DPICODOOM_PUBLISH_FIRST_FRAME_ONLY=0 \
-        -DPICODOOM_IDLE_AFTER_FIRST_DISPLAY=0 \
-        -DPICODOOM_FREEZE_POINT=0 \
-        -DPICODOOM_RENDER_THROTTLE_US=20 \
-        -DPICODOOM_FRAME_CAP_FPS=0 \
-        -DPICODOOM_SOLID_COLOR=0
-    cmake --build "$BUILD_DIR" -j8 --target doom_tiny_usb
+        -DPICODOOM_SYS_CLOCK_KHZ=252000 \
+        -DPICODOOM_HDMI_HSTX_CLK_DIV=2 \
+        -DPICODOOM_RENDER_THROTTLE_US=0
+    cmake --build "$BUILD_DIR" -j --target doom_tiny_usb
     UF2_FILE="${BUILD_DIR}/src/doom_tiny_usb.uf2"
 fi
 

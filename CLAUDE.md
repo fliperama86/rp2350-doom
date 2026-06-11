@@ -14,24 +14,30 @@ The port is a **work in progress**: video is mostly working but HDMI sync can dr
 
 ## Building (RP2350 / device)
 
-Builds **must** use `MinSizeRel` — `Debug`/`Release` binaries are too large and overlap the WHX flash payload at `0x10042000`, corrupting runtime. Build with Ninja:
+Builds **must** use `MinSizeRel` (`Debug`/`Release` are too large). The canonical device build lives in **`build/`** — `./flash.sh` (no args) configures it with the release flags and builds it. Do NOT create `build-xyz` variant directories; for diagnostic experiments, reconfigure `build/` with different `PICODOOM_*` flags (all configs are documented in `INVESTIGATION_PROGRESS.md`) or use a temp dir and delete it after.
+
+Release configuration (v0.1.2 lineage — see `flash.sh` for the live copy):
 
 ```sh
-cmake -S . -B build-name -G Ninja \
+cmake -S . -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=MinSizeRel \
   -DPICO_SDK_PATH=/Users/dudu/pico-sdk \
   -DPICO_EXTRAS_PATH=/Users/dudu/pico-extras \
   -DPICO_BOARD=pico2 \
   -DPICO_PLATFORM=rp2350-arm-s \
   -DPICO_STDIO_USB=OFF -DPICO_STDIO_UART=ON \
-  -DPICODOOM_HDMI_DIAG_STAGE=3 -DPICODOOM_HDMI_DVI_MODE=1 \
-  -DPICODOOM_SYS_CLOCK_KHZ=252000 -DPICODOOM_HDMI_HSTX_CLK_DIV=2
-cmake --build build-name --target doom_tiny_usb -j
+  -DPICODOOM_HDMI_DIAG_STAGE=3 -DPICODOOM_HDMI_DVI_MODE=0 \
+  -DPICODOOM_HDMI_LITE=1 -DPICODOOM_EMU8950_ASM=0 -DPICODOOM_DIAG_OVERLAY=0 \
+  -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10080000 \
+  -DPICODOOM_SKIP_WIPES=1 \
+  -DPICODOOM_SYS_CLOCK_KHZ=252000 -DPICODOOM_HDMI_HSTX_CLK_DIV=2 \
+  -DPICODOOM_RENDER_THROTTLE_US=0
+cmake --build build --target doom_tiny_usb -j
 ```
 
-- The working "real game" build lives in `build-min/` (produced by `flash.sh`). The many `build-*` directories are saved diagnostic experiments — see the "Useful Known Builds" list in `INVESTIGATION_PROGRESS.md`.
+- `PICODOOM_EMU8950_ASM=0` is REQUIRED for correct music (the RP2040-era asm corrupts OPL state on RP2350 — see `INVESTIGATION_PROGRESS.md`). `PICODOOM_DIAG_OVERLAY=1` re-enables the on-screen counter overlay for debugging.
 - Four device targets exist (`add_doom_tiny` in `src/CMakeLists.txt`): `doom_tiny`, `doom_tiny_usb`, `doom_tiny_nost`, `doom_tiny_nost_usb`. `*_usb` adds USB-keyboard (TinyUSB host); `*_nost` ("non super tiny") uses the larger WHD format for big WADs. `doom_tiny_usb` is the one normally built/flashed here.
-- Each target's WHX/WHD load address differs (`TINY_WAD_ADDR`): `doom_tiny`=`0x10040000`, `doom_tiny_usb`=`0x10042000`, `*_nost*`=`0x10048000`.
+- WHX/WHD load addresses (`TINY_WAD_ADDR`): `doom_tiny_usb` uses `PICODOOM_DOOM_TINY_USB_WAD_ADDR` (release: `0x10080000`; the board has 16 MB flash); `doom_tiny`=`PICODOOM_DOOM_TINY_WAD_ADDR` (default `0x10040000`), `*_nost*`=`0x10048000`.
 - `pico-extras` is no longer a real dependency of the HDMI path, but `pico_extras_import.cmake` is still included; passing `-DPICO_EXTRAS_PATH` avoids configure noise.
 
 ## Flashing
@@ -39,15 +45,15 @@ cmake --build build-name --target doom_tiny_usb -j
 The UF2 contains code only — the game data (`doom1.whx`) must be loaded separately at the WAD address. Use `./flash.sh`:
 
 ```sh
-./flash.sh build-name/src/doom_tiny_usb.uf2   # loads UF2 + doom1.whx at 0x10042000, then reboots
-./flash.sh                                    # no arg: rebuilds build-min/ then flashes
+./flash.sh build/src/doom_tiny_usb.uf2   # loads UF2 + doom1.whx (address auto-detected from the UF2), then reboots
+./flash.sh                               # no arg: rebuilds build/ with the release config, then flashes
 ```
 
-`flash.sh` runs `picotool load` for both files. The user's `pi flash <file.uf2>` tool can flash UF2 alone (with retry/reboot) when the WHX is already present and the UF2 ends below `0x10042000`.
+`flash.sh` reads the WHX address from the UF2's binary_info, so relocated builds flash correctly. The user's `pi flash <file.uf2>` tool can flash the UF2 alone (with retry/reboot) when the WHX is already present at the address the UF2 expects.
 
 **Always verify the UF2 fits before flashing** — confirm the binary end address is below the WHX base:
 ```sh
-picotool info -a build-name/src/doom_tiny_usb.uf2 | head -55
+picotool info -a build/src/doom_tiny_usb.uf2 | head -55
 ```
 
 ## Native / chocolate-doom build (verification)

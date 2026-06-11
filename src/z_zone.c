@@ -333,6 +333,10 @@ Z_MallocNoUser
         {
             // scanned all the way around the list
 #if DOOM_TINY
+            {
+                extern volatile uint32_t hdmi_diag_checkpoint;
+                hdmi_diag_checkpoint = 99; // zone exhausted (panic below halts silently)
+            }
             panic("out of memory");
 #else
             I_Error ("Z_Malloc: failed on allocation of %i bytes", size);

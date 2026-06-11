@@ -196,7 +196,11 @@ volatile uint32_t hdmi_diag_pd_publish_count;
 
 extern uint8_t __aligned(4) frame_buffer[2][SCREENWIDTH * MAIN_VIEWHEIGHT];
 #if PICO_DOOM && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
+#if defined(PICODOOM_HDMI_LITE) && PICODOOM_HDMI_LITE
+extern uint8_t *const hdmi_status_buffer;
+#else
 extern uint8_t __aligned(4) hdmi_status_buffer[SCREENWIDTH * 32];
+#endif
 #endif
 static uint8_t __aligned(4) visplane_bit[(SCREENWIDTH / 8) * MAIN_VIEWHEIGHT]; // this is also used for patch decoding in core1 (since flats are done by then)
 static int8_t flatnum_first[256];

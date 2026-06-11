@@ -34,11 +34,9 @@ typedef struct audio_buffer {
     uint32_t sample_count;
 } audio_buffer_t;
 
-#if USE_EMU8950_OPL
-#define PICO_SOUND_SAMPLE_FREQ 49716
-#else
-#define PICO_SOUND_SAMPLE_FREQ 44100
-#endif
+// HDMI audio is clocked at 48 kHz (exactly 800 samples per 60 Hz frame at
+// the 25.2 MHz pixel clock); both OPL engines accept an arbitrary rate.
+#define PICO_SOUND_SAMPLE_FREQ 48000
 
 #ifndef NUM_SOUND_CHANNELS
 // this is the defaul tin game not 16
@@ -47,6 +45,13 @@ typedef struct audio_buffer {
 
 void I_PicoSoundSetMusicGenerator(void (*generator)(audio_buffer_t *buffer));
 bool I_PicoSoundIsInitialized(void);
+// Drain mixed stereo samples (interleaved L/R pairs); zero-fills on underrun.
+// Called from Core 1's HDMI data-island writer. Returns pairs actually mixed.
+int I_PicoSoundPullStereo(int16_t *dst, int sample_pairs);
+// Diagnostics: total pairs mixed/pulled so far / whether music is set.
+uint32_t I_PicoSoundMixedCount(void);
+uint32_t I_PicoSoundPulledCount(void);
+bool I_PicoSoundMusicActive(void);
 void I_PicoSoundFade(bool in);
 bool I_PicoSoundFading(void);
 #endif

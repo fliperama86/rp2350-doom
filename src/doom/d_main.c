@@ -2039,8 +2039,9 @@ void D_DoomMain (void)
 #if PICO_DOOM
     hdmi_diag_boot_marker_set(7);
 #endif
-#if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 2
-    // Diagnostic mode: skip audio init to rule out sound bring-up stalls.
+#if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 2 && PICODOOM_HDMI_DVI_MODE
+    // Video-only diagnostic builds: skip audio init to rule out sound
+    // bring-up stalls. HDMI-audio builds need the full sound system.
 #else
     I_InitSound(true);
     I_InitMusic();

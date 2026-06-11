@@ -26,6 +26,10 @@
 #include "SDL.h"
 #else
 #include "pico/stdlib.h"
+#if PICODOOM_CDC_WAIT
+#include "pico/stdio_usb.h"
+#include "pico/bootrom.h"
+#endif
 #include "hardware/gpio.h"
 #include "pico/sem.h"
 #include "pico/multicore.h"
@@ -99,11 +103,36 @@ int main(int argc, char **argv)
 #if LIB_PICO_STDIO
     stdio_init_all();
 #endif
+#if PICODOOM_CDC_WAIT
+    // Diag builds (USB-CDC stdio): hold boot until the host attaches to the
+    // serial port; if no host attaches within 10 s, self-reboot to BOOTSEL so
+    // a USB-dead build hands itself back for reflashing without the button.
+    {
+        absolute_time_t cdc_deadline = make_timeout_time_ms(10000);
+        while (!stdio_usb_connected() && !time_reached(cdc_deadline)) {
+            sleep_ms(100);
+        }
+        if (!stdio_usb_connected()) {
+            reset_usb_boot(0, 0);
+        }
+        sleep_ms(500); // let the terminal settle before the first prints
+        printf("BOOT: rp2350-doom diag (cdc connected=%d)\n", stdio_usb_connected());
+    }
+#endif
+#ifndef PICODOOM_BOOT_HALT
+#define PICODOOM_BOOT_HALT 0
+#endif
+#if PICODOOM_BOOT_HALT == 1
+    while (1) { printf("HALT1 after stdio\n"); sleep_ms(1000); }
+#endif
 #if PICO_ON_DEVICE && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 2
     // Stage 2+3 diagnostics: bring up HDMI immediately so pre-render stalls are visible.
     I_InitGraphics();
 #if PICO_DOOM
     hdmi_diag_boot_marker_set(1);
+#endif
+#if PICODOOM_BOOT_HALT == 2
+    while (1) { printf("HALT2 after I_InitGraphics\n"); sleep_ms(1000); }
 #endif
 #endif
 #if PICO_ON_DEVICE && defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE == 1

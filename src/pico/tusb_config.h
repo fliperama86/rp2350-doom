@@ -39,7 +39,16 @@
   #error CFG_TUSB_MCU must be defined
 #endif
 
-#if CFG_TUSB_MCU == OPT_MCU_LPC43XX || CFG_TUSB_MCU == OPT_MCU_LPC18XX || CFG_TUSB_MCU == OPT_MCU_MIMXRT10XX
+#if !defined(USB_SUPPORT) || !USB_SUPPORT
+// Non-host targets (doom_tiny): leave the port in device mode so
+// pico_stdio_usb (USB-CDC stdio + picotool reset interface) can be used for
+// diagnostics. Mirrors the SDK's default stdio_usb configuration.
+  #define CFG_TUSB_RHPORT0_MODE       OPT_MODE_DEVICE
+  #define CFG_TUD_ENABLED             1
+  #define CFG_TUD_CDC                 1
+  #define CFG_TUD_CDC_RX_BUFSIZE      256
+  #define CFG_TUD_CDC_TX_BUFSIZE      256
+#elif CFG_TUSB_MCU == OPT_MCU_LPC43XX || CFG_TUSB_MCU == OPT_MCU_LPC18XX || CFG_TUSB_MCU == OPT_MCU_MIMXRT10XX
   #define CFG_TUSB_RHPORT0_MODE       (OPT_MODE_HOST | OPT_MODE_HIGH_SPEED)
 #else
   #define CFG_TUSB_RHPORT0_MODE       OPT_MODE_HOST

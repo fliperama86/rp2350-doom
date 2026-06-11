@@ -707,7 +707,15 @@ void S_ChangeMusic(int musicnum, int looping)
     }
 
     // shutdown old music
+    {
+        extern volatile uint32_t hdmi_diag_checkpoint;
+        hdmi_diag_checkpoint = 31;
+    }
     S_StopMusic();
+    {
+        extern volatile uint32_t hdmi_diag_checkpoint;
+        hdmi_diag_checkpoint = 32;
+    }
 
     // get lumpnum if neccessary
     if (!music->lumpnum)
@@ -723,7 +731,15 @@ void S_ChangeMusic(int musicnum, int looping)
     handle = I_RegisterSong(W_CacheLumpNum(music->lumpnum, PU_STATIC), W_LumpLength(music->lumpnum));
 #endif
     music->handle = handle;
+    {
+        extern volatile uint32_t hdmi_diag_checkpoint;
+        hdmi_diag_checkpoint = 33;
+    }
     I_PlaySong(handle, looping);
+    {
+        extern volatile uint32_t hdmi_diag_checkpoint;
+        hdmi_diag_checkpoint = 34;
+    }
 
     mus_playing = music;
 }

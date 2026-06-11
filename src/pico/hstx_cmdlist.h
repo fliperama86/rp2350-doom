@@ -17,6 +17,14 @@ void hstx_cmdlist_scanout_start(const uint32_t *frame_base, uint32_t pitch_words
 // Increments once per scanned-out frame (in the per-frame DMA IRQ).
 uint32_t hstx_cmdlist_frame_number(void);
 
+// HDMI mode only (PICODOOM_HDMI_DVI_MODE=0): audio packets ride one data
+// island per active line, fed from a ring refilled ahead of the beam.
+// Call frame_begin once per frame right after the frame IRQ (prefills the
+// ring while the beam is in blanking), then poll frequently from Core 1's
+// idle loop to keep filling ahead of the scan. No-ops in DVI mode.
+void hstx_cmdlist_audio_frame_begin(void);
+void hstx_cmdlist_audio_poll(void);
+
 #ifdef __cplusplus
 }
 #endif

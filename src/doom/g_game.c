@@ -2477,6 +2477,8 @@ void G_DoPlayDemo (void)
     int i, lumpnum, episode, map;
     int demoversion;
 
+    extern volatile uint32_t hdmi_diag_checkpoint;
+    hdmi_diag_checkpoint = 10;
     lumpnum = W_GetNumForName(defdemoname);
     gameaction = ga_nothing;
     should_be_const byte *demobuffer = W_CacheLumpNum(lumpnum, PU_STATIC);
@@ -2534,7 +2536,9 @@ void G_DoPlayDemo (void)
 
     // don't spend a lot of time in loadlevel
     precache = false;
-    G_InitNew (skill, episode, map); 
+    hdmi_diag_checkpoint = 11;
+    G_InitNew (skill, episode, map);
+    hdmi_diag_checkpoint = 12;
 #if USE_WHD
     uint8_t decode_words = *demo_p++;
     memset(&demo_decode, 0, sizeof(demo_decode));

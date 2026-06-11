@@ -59,7 +59,7 @@
 #ifndef PICODOOM_HDMI_FIFO_PROBE
 #define PICODOOM_HDMI_FIFO_PROBE 0
 #endif
-#if PICODOOM_HDMI_FIFO_PROBE
+#if PICODOOM_HDMI_FIFO_PROBE || PICODOOM_HDMI_LITE
 #include "hardware/structs/hstx_fifo.h"
 #endif
 #endif
@@ -133,14 +133,32 @@ volatile uint8_t interp_in_use;
 #define PICODOOM_HDMI_CMDLIST 0
 #endif
 
+#ifndef PICODOOM_HDMI_LITE
+#define PICODOOM_HDMI_LITE 0
+#endif
+
+#if PICODOOM_HDMI_LITE
+// pico_hdmi transport with all per-line work moved out of the ISR:
+// pre-composed island line headers (ring at 0x20070000), native 16-bit
+// pixel pointers into the RGB565 frame, audio pumped from the game mixer.
+#if PICODOOM_HDMI_CMDLIST
+#error PICODOOM_HDMI_LITE and PICODOOM_HDMI_CMDLIST are mutually exclusive
+#endif
+#if PICODOOM_HDMI_240P
+#error PICODOOM_HDMI_LITE requires the 640x480 mode (PICODOOM_HDMI_240P=0)
+#endif
+#if PICODOOM_HDMI_DIAG_STAGE < 3
+#error PICODOOM_HDMI_LITE requires PICODOOM_HDMI_DIAG_STAGE=3
+#endif
+#include "i_picosound.h"
+#include "hdmi_lite_layout.h"
+#endif
+
 #if PICODOOM_HDMI_CMDLIST
 // Command-list scanout: per-frame DMA command list, no per-line ISR, no
 // pico_hdmi runtime. Scans the native 320x200 RGB565 frame directly.
 #if PICODOOM_HDMI_240P
 #error PICODOOM_HDMI_CMDLIST requires the 640x480 mode (PICODOOM_HDMI_240P=0)
-#endif
-#if !PICODOOM_HDMI_DVI_MODE
-#error PICODOOM_HDMI_CMDLIST is DVI-only (no data islands); set PICODOOM_HDMI_DVI_MODE=1
 #endif
 #if PICODOOM_HDMI_DIAG_STAGE < 3
 #error PICODOOM_HDMI_CMDLIST requires PICODOOM_HDMI_DIAG_STAGE=3
@@ -151,7 +169,7 @@ volatile uint8_t interp_in_use;
 #include "hstx_cmdlist.h"
 #endif
 
-#if PICODOOM_HDMI_CMDLIST
+#if PICODOOM_HDMI_CMDLIST || PICODOOM_HDMI_LITE
 #define PICODOOM_HDMI_USE_RGB565_FRAME 1
 #elif PICODOOM_HDMI_PREPARED_SCANLINES && PICODOOM_HDMI_DIAG_STAGE >= 3
 #define PICODOOM_HDMI_USE_RGB565_FRAME 1
@@ -205,7 +223,15 @@ pixel_t *I_VideoBuffer; // todo can't have this
 
 uint8_t __aligned(4) frame_buffer[2][SCREENWIDTH*MAIN_VIEWHEIGHT];
 #if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
+#if PICODOOM_HDMI_LITE
+// Parked in the top-of-SRAM region (hdmi_lite_layout.h) so the zone keeps
+// enough headroom for the sound system's allocations.
+uint8_t *const hdmi_status_buffer = (uint8_t *)HDMI_LITE_STATUS_BUF_ADDR;
+_Static_assert(SCREENWIDTH * 32 <= HDMI_LITE_STATUS_BUF_BYTES,
+               "hdmi_status_buffer overflows its region slot");
+#else
 uint8_t __aligned(4) hdmi_status_buffer[SCREENWIDTH * 32];
+#endif
 #endif
 static uint16_t palette[256];
 static uint16_t __scratch_x("shared_pal") shared_pal[NUM_SHARED_PALETTES][16];
@@ -1186,14 +1212,24 @@ static const uint32_t *__scratch_x("doom_scanline") hdmi_rgb565_line_ring_pointe
 #endif
 
 #if PICODOOM_HDMI_USE_RGB565_FRAME
+#if PICODOOM_HDMI_LITE && !PICODOOM_HDMI_DVI_MODE
+static void hdmi_audio_pump(void);
+#endif
+
 static void hdmi_rgb565_build_display_frame(void) {
 #if PICODOOM_HDMI_FREEZE_RGB565_FRAME
     if (hdmi_rgb565_frame_frozen) {
         return;
     }
 #endif
+#if PICODOOM_HDMI_LITE || PICODOOM_HDMI_CMDLIST
+    // Direct-scan modes rebuild the frame in place while it is being scanned
+    // out: a slow rebuild tears briefly. Clearing the ready latch here would
+    // instead black out every row scanned during the ~3 ms rebuild.
+#else
     hdmi_rgb565_frame_ready = false;
     __compiler_memory_barrier();
+#endif
 
     if (display_video_type == VIDEO_TYPE_NONE) {
         return;
@@ -1201,6 +1237,18 @@ static void hdmi_rgb565_build_display_frame(void) {
 
     for (int doom_line = 0; doom_line < SCREENHEIGHT; doom_line++) {
         hdmi_render_native_scanline(hdmi_rgb565_frame[doom_line], doom_line);
+#if PICODOOM_HDMI_LITE
+        // The compose ring leads the beam by ~88 lines but this whole-frame
+        // rebuild takes ~3 ms (~95 scanout lines): without mid-rebuild
+        // service the ring goes stale and the ISR drops one audio packet per
+        // stale line, every frame.
+        if ((doom_line & 15) == 15) {
+            video_output_compose_service();
+#if !PICODOOM_HDMI_DVI_MODE
+            hdmi_audio_pump();
+#endif
+        }
+#endif
     }
 
 #if PICODOOM_HDMI_LINE_RING_ACTIVE
@@ -1282,6 +1330,109 @@ static const uint32_t *__scratch_x("doom_scanline") hdmi_solid_pointer_callback(
     (void)active_line;
     return solid_line;
 }
+
+#if PICODOOM_HDMI_LITE
+// Native pixel mode: return the 320px RGB565 row; hardware doubles it.
+static uint32_t __aligned(4) hdmi_lite_black_row[SCREENWIDTH / 2];
+// On-screen text diagnostics (no UART needed): a 3-line counter dump in the
+// top letterbox, rendered into a canvas in the free top-of-SRAM region.
+// Counters keep their last values when something halts, so the frozen frame
+// IS the post-mortem.
+extern volatile uint32_t hdmi_diag_i_error_count;
+extern volatile uint32_t hdmi_diag_checkpoint;
+
+#define HDMI_LITE_TEXT_ROWS 24
+#define hdmi_lite_text_canvas ((uint16_t (*)[SCREENWIDTH])HDMI_LITE_TEXT_CANVAS_ADDR)
+_Static_assert(HDMI_LITE_TEXT_ROWS * SCREENWIDTH * 2 <= HDMI_LITE_TEXT_CANVAS_BYTES,
+               "diag text canvas overflows its region slot");
+
+// HSTX FIFO health, sampled per active line in ISR context: EMPTY during
+// active video = underflow (the thing that drops sync); LEVEL = margin.
+static volatile uint32_t hdmi_lite_fifo_empty_events;
+static volatile uint32_t hdmi_lite_fifo_min_level = 0xff;
+
+// 5x7 font, column bytes, bit0 = top row. Subset needed by the diag lines.
+typedef struct { char c; uint8_t col[5]; } diag_glyph_t;
+static const diag_glyph_t hdmi_lite_font[] = {
+    {'0', {0x3E,0x51,0x49,0x45,0x3E}}, {'1', {0x00,0x42,0x7F,0x40,0x00}},
+    {'2', {0x42,0x61,0x51,0x49,0x46}}, {'3', {0x21,0x41,0x45,0x4B,0x31}},
+    {'4', {0x18,0x14,0x12,0x7F,0x10}}, {'5', {0x27,0x45,0x45,0x45,0x39}},
+    {'6', {0x3C,0x4A,0x49,0x49,0x30}}, {'7', {0x01,0x71,0x09,0x05,0x03}},
+    {'8', {0x36,0x49,0x49,0x49,0x36}}, {'9', {0x06,0x49,0x49,0x29,0x1E}},
+    {'B', {0x7F,0x49,0x49,0x49,0x36}}, {'C', {0x3E,0x41,0x41,0x41,0x22}},
+    {'E', {0x7F,0x49,0x49,0x49,0x41}}, {'F', {0x7F,0x09,0x09,0x09,0x01}},
+    {'L', {0x7F,0x40,0x40,0x40,0x40}}, {'M', {0x7F,0x02,0x0C,0x02,0x7F}},
+    {'N', {0x7F,0x04,0x08,0x10,0x7F}}, {'P', {0x7F,0x09,0x09,0x09,0x06}},
+    {'R', {0x7F,0x09,0x19,0x29,0x46}}, {'S', {0x46,0x49,0x49,0x49,0x31}},
+    {'T', {0x01,0x01,0x7F,0x01,0x01}},
+    {'X', {0x63,0x14,0x08,0x14,0x63}}, {'Y', {0x07,0x08,0x70,0x08,0x07}},
+};
+
+static void hdmi_lite_draw_text(int x, int y, const char *s) {
+    for (; *s && x + 6 <= SCREENWIDTH; s++, x += 6) {
+        if (*s == ' ') continue;
+        const uint8_t *col = NULL;
+        for (uint i = 0; i < count_of(hdmi_lite_font); i++) {
+            if (hdmi_lite_font[i].c == *s) { col = hdmi_lite_font[i].col; break; }
+        }
+        if (!col) continue;
+        for (int cx = 0; cx < 5; cx++) {
+            for (int cy = 0; cy < 7; cy++) {
+                if (col[cx] & (1 << cy)) {
+                    hdmi_lite_text_canvas[y + cy][x + cx] = 0xffff;
+                }
+            }
+        }
+    }
+}
+
+static void hdmi_lite_update_diag_rows(void) {
+    char line[56];
+    memset(hdmi_lite_text_canvas, 0, HDMI_LITE_TEXT_ROWS * SCREENWIDTH * 2);
+    snprintf(line, sizeof line, "LP %lu TC %d ER %lu CP %lu",
+             (unsigned long)hdmi_diag_doomloop_count, gametic,
+             (unsigned long)hdmi_diag_i_error_count,
+             (unsigned long)hdmi_diag_checkpoint);
+    hdmi_lite_draw_text(0, 0, line);
+    snprintf(line, sizeof line, "MX %lu PL %lu FE %lu FL %lu",
+             (unsigned long)I_PicoSoundMixedCount(),
+             (unsigned long)I_PicoSoundPulledCount(),
+             (unsigned long)hdmi_lite_fifo_empty_events,
+             (unsigned long)hdmi_lite_fifo_min_level);
+    hdmi_lite_draw_text(0, 8, line);
+    snprintf(line, sizeof line, "PB %lu CN %lu RY %d FR %d ST %lu",
+             (unsigned long)hdmi_diag_pd_publish_count,
+             (unsigned long)hdmi_diag_frameconsume_count,
+             sem_available(&render_frame_ready),
+             sem_available(&display_frame_freed),
+             (unsigned long)video_output_precomposed_stale_count);
+    hdmi_lite_draw_text(0, 16, line);
+}
+
+static const uint32_t *__scratch_x("doom_scanline") hdmi_lite_pointer_callback(uint32_t v_scanline, uint32_t active_line) {
+    (void)v_scanline;
+    {
+        uint32_t stat = hstx_fifo_hw->stat;
+        uint32_t level = stat & 0xffu;
+        if (level < hdmi_lite_fifo_min_level) {
+            hdmi_lite_fifo_min_level = level;
+        }
+        if (stat & (1u << 9)) {
+            hdmi_lite_fifo_empty_events++;
+        }
+    }
+    // Diag text overlays the top of the picture area (TV overscan clips the
+    // letterbox region).
+    if (active_line >= 56 && active_line < 56 + HDMI_LITE_TEXT_ROWS) {
+        return (const uint32_t *)hdmi_lite_text_canvas[active_line - 56];
+    }
+    if (active_line < LETTERBOX_TOP || active_line >= LETTERBOX_BOTTOM ||
+        display_video_type == VIDEO_TYPE_NONE || !hdmi_rgb565_frame_ready) {
+        return hdmi_lite_black_row;
+    }
+    return hdmi_rgb565_frame[(active_line - LETTERBOX_TOP) / 2];
+}
+#endif
 #endif
 
 #if !PICODOOM_HDMI_USE_RGB565_FRAME
@@ -1359,6 +1510,36 @@ void hdmi_diag_service_video_handoff(void) {
 }
 
 #if !PICODOOM_HDMI_CMDLIST
+#if !PICODOOM_HDMI_DVI_MODE && (PICODOOM_HDMI_AUDIO_TEST_TONE || PICODOOM_HDMI_LITE)
+// Pump audio packets into pico_hdmi's data-island queue (the transport the
+// bouncing_box demos prove works with audio). Runs in Core 1's background
+// task between scanline IRQs. Source: the game mixer ring, or a 1 kHz
+// square wave when PICODOOM_HDMI_AUDIO_TEST_TONE is set.
+static void hdmi_audio_pump(void) {
+    static int iec_counter;
+#if PICODOOM_HDMI_AUDIO_TEST_TONE
+    static uint32_t tone_phase;
+#endif
+    while (hstx_di_queue_get_level() < 64) {
+        audio_sample_t samples[4];
+#if PICODOOM_HDMI_AUDIO_TEST_TONE
+        for (int i = 0; i < 4; i++) {
+            int16_t v = ((tone_phase++ / 24u) & 1u) ? 3000 : -3000;
+            samples[i].left = v;
+            samples[i].right = v;
+        }
+#else
+        I_PicoSoundPullStereo((int16_t *)samples, 4);
+#endif
+        hstx_packet_t packet;
+        hstx_data_island_t island;
+        iec_counter = hstx_packet_set_audio_samples_cs(&packet, samples, 4, iec_counter);
+        hstx_encode_data_island(&island, &packet, false, true);
+        hstx_di_queue_push(&island);
+    }
+}
+#endif
+
 static void hdmi_vsync_callback(void) {
     // VSYNC callback runs in DMA IRQ context; defer heavy frame work.
     hdmi_diag_vsync_count++;
@@ -1375,6 +1556,36 @@ static void hdmi_vsync_callback(void) {
 }
 
 static void core1_background_task(void) {
+#if PICODOOM_HDMI_LITE
+    // Keep pre-composed active-line headers and the island queue topped up
+    // BEFORE the (long) deferred frame work so the ring covers the rebuild.
+    video_output_compose_service();
+#endif
+#if !PICODOOM_HDMI_DVI_MODE && (PICODOOM_HDMI_AUDIO_TEST_TONE || PICODOOM_HDMI_LITE)
+    hdmi_audio_pump();
+#endif
+#if PICODOOM_HDMI_LITE
+    if (hdmi_vsync_pending) {
+        hdmi_lite_update_diag_rows();
+        // Once per second over stdio (USB CDC in the diag build): survives a
+        // video sync drop, so the telemetry keeps flowing afterwards.
+        static uint32_t lite_report_frames;
+        if (++lite_report_frames >= 60) {
+            lite_report_frames = 0;
+            extern volatile uint32_t hdmi_diag_checkpoint;
+            printf("LITE fe=%u fl=%u st=%u vs=%u pub=%u con=%u mix=%u pull=%u cp=%u\n",
+                   (unsigned)hdmi_lite_fifo_empty_events,
+                   (unsigned)hdmi_lite_fifo_min_level,
+                   (unsigned)video_output_precomposed_stale_count,
+                   (unsigned)hdmi_diag_vsync_count,
+                   (unsigned)hdmi_diag_pd_publish_count,
+                   (unsigned)hdmi_diag_frameconsume_count,
+                   (unsigned)I_PicoSoundMixedCount(),
+                   (unsigned)I_PicoSoundPulledCount(),
+                   (unsigned)hdmi_diag_checkpoint);
+        }
+    }
+#endif
     hdmi_diag_service_video_handoff();
 #if PICODOOM_HDMI_LINE_RING_ACTIVE && PICODOOM_HDMI_LINE_RING_PREPARE
 #if PICODOOM_HDMI_LINE_RING_VBLANK_ONLY
@@ -1400,7 +1611,8 @@ static void core1() {
     while (true) {
         uint32_t frame = hstx_cmdlist_frame_number();
         if (frame == last_frame) {
-            tight_loop_contents();
+            // Keep the active-line audio island ring filled ahead of the beam.
+            hstx_cmdlist_audio_poll();
             continue;
         }
         last_frame = frame;
@@ -1410,6 +1622,9 @@ static void core1() {
             led_state = !led_state;
             gpio_put(PICO_DEFAULT_LED_PIN, led_state);
         }
+        // Prefill the whole audio ring while the beam is still in blanking --
+        // it covers the video rebuild below, during which we cannot poll.
+        hstx_cmdlist_audio_frame_begin();
         // Frame handoff plus the full 320x200 RGB565 rebuild (in
         // hdmi_rgb565_build_display_frame), once per scanout frame. Scanout
         // never waits on this: a slow rebuild can tear, not drop sync.
@@ -1423,7 +1638,18 @@ static void core1() {
     busctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
     while (!(busctrl_hw->priority_ack)) tight_loop_contents();
 
-#if PICODOOM_HDMI_SOLID_POINTER_TEST
+#if PICODOOM_HDMI_LITE
+    video_output_set_scanline_pointer_callback(hdmi_lite_pointer_callback);
+    video_output_set_native_pixel_mode(true);
+    // Pre-composed line ring in the free top 64 KB of SRAM (layout and
+    // overlap asserts in hdmi_lite_layout.h). 96 entries lead the beam by
+    // ~88 lines; the per-frame RGB565 rebuild additionally services the
+    // ring mid-loop so it can never fully stale out.
+    video_output_set_compose_ring((video_output_precomposed_line_t *)HDMI_LITE_COMPOSE_RING_ADDR,
+                                  HDMI_LITE_COMPOSE_RING_ENTRIES);
+    // All audio rides the 480 active lines: 800 samples/frame.
+    hstx_di_queue_set_samples_per_line_fp((800u << 16) / 480u);
+#elif PICODOOM_HDMI_SOLID_POINTER_TEST
     video_output_set_scanline_pointer_callback(hdmi_solid_pointer_callback);
 #elif PICODOOM_HDMI_LINE_RING_ACTIVE
     video_output_set_scanline_pointer_callback(hdmi_rgb565_line_ring_pointer_callback);

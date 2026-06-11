@@ -499,10 +499,14 @@ function(add_doom_tiny SUFFIX RENDER_LIB)
         NO_RDRAW=1
 
         #NO_DRAW_MENU=1
-        # SDK minimilization
-        PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1
+        # SDK minimilization (the default alarm pool must stay enabled when
+        # pico_stdio_usb is in use -- it drives the USB background task)
+        $<$<NOT:$<BOOL:${PICO_STDIO_USB}>>:PICO_TIME_DEFAULT_ALARM_POOL_DISABLED=1>
         PICO_TIME_DEFAULT_ALARM_POOL_MAX_TIMERS=1
-        PICO_DISABLE_SHARED_IRQ_HANDLERS=1
+        # USB-CDC stdio needs shared IRQ handlers (both the TinyUSB device
+        # driver and stdio_usb register one on USBCTRL_IRQ)
+        $<$<NOT:$<BOOL:${PICO_STDIO_USB}>>:PICO_DISABLE_SHARED_IRQ_HANDLERS=1>
+        $<$<BOOL:${PICO_STDIO_USB}>:PICODOOM_CDC_WAIT=1>
         PICO_USE_OPTIMISTIC_SBRK=1
 
         # MUSIC
@@ -622,8 +626,9 @@ if (PICO_SDK)
             NO_USE_FINALE_CAST=1
             NO_USE_FINALE_BUNNY=1
     )
+    set(PICODOOM_DOOM_TINY_WAD_ADDR "0x10040000" CACHE STRING "WHX load address for the doom_tiny target")
     target_compile_definitions(doom_tiny PRIVATE
-            TINY_WAD_ADDR=0x10040000
+            TINY_WAD_ADDR=${PICODOOM_DOOM_TINY_WAD_ADDR}
     )
     target_link_libraries(doom_tiny PRIVATE tiny_settings)
     add_doom_tiny(_nost render_newhope)

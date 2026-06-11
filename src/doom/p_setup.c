@@ -1022,6 +1022,9 @@ P_SetupLevel
     char	lumpname[9];
     int		lumpnum;
 
+    extern volatile uint32_t hdmi_diag_checkpoint;
+    hdmi_diag_checkpoint = 20;
+
 #if PICO_DOOM_INFO
     printf("SETUP LEVEL E%dM%d\n", episode, map);
 #endif
@@ -1119,6 +1122,7 @@ P_SetupLevel
 
     //printf ("free memory: 0x%x\n", Z_FreeMemory());
 
+    hdmi_diag_checkpoint = 21;
 }
 
 

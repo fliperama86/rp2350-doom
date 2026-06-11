@@ -83,6 +83,23 @@ if (NOT PICODOOM_HDMI_CMDLIST MATCHES "^[01]$")
     message(FATAL_ERROR "PICODOOM_HDMI_CMDLIST must be 0 or 1")
 endif()
 
+set(PICODOOM_HDMI_LITE "0" CACHE STRING "Use the pico_hdmi transport with pre-composed line headers + native pixel pointers (ISR does pointer swaps only): stable video AND HDMI audio")
+set_property(CACHE PICODOOM_HDMI_LITE PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_HDMI_LITE MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_HDMI_LITE must be 0 or 1")
+endif()
+
+set(PICODOOM_BOOT_HALT "0" CACHE STRING "Diag: halt boot at stage N with a print loop (1=after stdio, 2=after I_InitGraphics) to bisect USB-killing init steps")
+if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
+    message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
+endif()
+
+set(PICODOOM_HDMI_AUDIO_TEST_TONE "0" CACHE STRING "Diagnostic: 1=feed a 1 kHz square wave into the HDMI audio islands (bypasses the game mixer), 2=bake the tone statically into the ring at init (no dynamic island writes at all)")
+set_property(CACHE PICODOOM_HDMI_AUDIO_TEST_TONE PROPERTY STRINGS 0 1 2)
+if (NOT PICODOOM_HDMI_AUDIO_TEST_TONE MATCHES "^[0-2]$")
+    message(FATAL_ERROR "PICODOOM_HDMI_AUDIO_TEST_TONE must be 0, 1, or 2")
+endif()
+
 set(PICODOOM_HDMI_FIFO_PROBE "0" CACHE STRING "Diagnostic: sample the HSTX FIFO level/EMPTY per active scanline and report starvation over UART")
 set_property(CACHE PICODOOM_HDMI_FIFO_PROBE PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_HDMI_FIFO_PROBE MATCHES "^[01]$")
@@ -179,13 +196,15 @@ if (PICO_ON_DEVICE)
             ${CMAKE_CURRENT_LIST_DIR}/hstx_cmdlist.c
             ${CMAKE_CURRENT_LIST_DIR}/picoflash.c
             )
-    pico_wrap_function(common_pico malloc)
-    pico_wrap_function(common_pico calloc)
-    pico_wrap_function(common_pico free)
-    target_compile_definitions(common_pico INTERFACE
-            PICO_HEAP_SIZE=0
-            USE_ZONE_FOR_MALLOC=1
-    )
+    if (NOT PICODOOM_TEST_NO_ZONE_MALLOC)
+        pico_wrap_function(common_pico malloc)
+        pico_wrap_function(common_pico calloc)
+        pico_wrap_function(common_pico free)
+        target_compile_definitions(common_pico INTERFACE
+                PICO_HEAP_SIZE=0
+                USE_ZONE_FOR_MALLOC=1
+        )
+    endif()
     target_link_libraries(common_pico INTERFACE  hardware_i2c)
 endif()
 target_include_directories(common_pico INTERFACE
@@ -213,6 +232,10 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_HDMI_LINE_RING_PREPARE=${PICODOOM_HDMI_LINE_RING_PREPARE}
         PICODOOM_HDMI_LINE_RING_VBLANK_ONLY=${PICODOOM_HDMI_LINE_RING_VBLANK_ONLY}
         PICODOOM_HDMI_CMDLIST=${PICODOOM_HDMI_CMDLIST}
+        PICODOOM_HDMI_LITE=${PICODOOM_HDMI_LITE}
+        $<$<BOOL:${PICODOOM_HDMI_LITE}>:PICO_HDMI_PRECOMPOSED_ACTIVE_LINES=1>
+        PICODOOM_BOOT_HALT=${PICODOOM_BOOT_HALT}
+        PICODOOM_HDMI_AUDIO_TEST_TONE=${PICODOOM_HDMI_AUDIO_TEST_TONE}
         $<$<BOOL:${PICODOOM_HDMI_240P}>:VIDEO_MODE_320x240=1>
         PICODOOM_SOLID_COLOR=${PICODOOM_SOLID_COLOR}
         PICODOOM_HDMI_FIFO_PROBE=${PICODOOM_HDMI_FIFO_PROBE}

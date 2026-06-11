@@ -501,9 +501,17 @@ void __attribute((noreturn)) I_Quit (void)
 // I_Error
 //
 
+// Latched for the on-screen diagnostic stripes (the screen freezes on the
+// __breakpoint(), so this is often the only way to see the error happened).
+volatile uint32_t hdmi_diag_i_error_count;
+// Breadcrumb checkpoint shown by the on-screen diag overlay; set at key
+// points in the demo-transition path to locate silent blocks.
+volatile uint32_t hdmi_diag_checkpoint;
+
 #if !NO_IERROR || !PICO_ON_DEVICE
 void I_Error (const char *error, ...)
 {
+    hdmi_diag_i_error_count++;
     va_list argptr;
     va_start(argptr, error);
     //stderr_print( "\nError: ");

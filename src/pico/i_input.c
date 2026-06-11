@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #if USB_SUPPORT
 #include "pico/binary_info.h"
+#include "pico/bootrom.h"
 #include "tusb.h"
 #include "hardware/irq.h"
 bi_decl(bi_program_feature("USB keyboard support"));
@@ -685,6 +686,14 @@ static void check_mod(int mod, int prev_mod, int mask, int scancode) {
 static void process_kbd_report(hid_keyboard_report_t const *report)
 {
     static hid_keyboard_report_t prev_report = { 0, 0, {0} }; // previous report to check key released
+
+    // Ctrl+Alt+Del reboots into BOOTSEL: the USB port runs in host mode, so
+    // picotool has no device interface to trigger the bootloader through.
+    if ((report->modifier & (KEYBOARD_MODIFIER_LEFTCTRL | KEYBOARD_MODIFIER_RIGHTCTRL)) &&
+        (report->modifier & (KEYBOARD_MODIFIER_LEFTALT | KEYBOARD_MODIFIER_RIGHTALT)) &&
+        find_key_in_report(report, HID_KEY_DELETE)) {
+        reset_usb_boot(0, 0);
+    }
 
     //------------- example code ignore control (non-printable) key affects -------------//
     for(uint8_t i=0; i<6; i++)

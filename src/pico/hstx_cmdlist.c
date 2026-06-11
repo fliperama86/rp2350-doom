@@ -17,7 +17,17 @@
 // write, yielding px|(px<<16)) and the HSTX expander emits each word as two
 // pixels (ENC_N_SHIFTS=2/ENC_SHIFT=16) for the 2x horizontal scale. The 2x
 // vertical scale is each frame row appearing in two consecutive command
-// slots. DVI only -- no data islands, so no HDMI audio.
+// slots.
+//
+// HDMI mode (PICODOOM_HDMI_DVI_MODE=0) adds data islands. Audio sample
+// packets MUST be spread evenly across the frame (sink audio FIFOs are
+// shallow; a vblank burst followed by a 15 ms gap mutes the receiver), so
+// every active line carries one island inside its hsync pulse -- the same
+// placement pico_hdmi uses. Active line headers come from a ring of buffers
+// that Core 1 refills ahead of the beam; a late refill repeats a stale
+// packet (audio blip), it can never disturb video timing. Blanking lines
+// carry the static AVI/audio infoframes; ACR packets ride the active-line
+// schedule so the clock regeneration is evenly spaced too.
 //
 
 #include "pico.h"
@@ -35,6 +45,14 @@
 #include "hardware/structs/hstx_fifo.h"
 
 #include "hstx_cmdlist.h"
+
+#if !PICODOOM_HDMI_DVI_MODE
+// HDMI mode reuses pico_hdmi's packet/TERC4/BCH machinery (pure functions,
+// no dependency on its ISR runtime) to pre-encode data islands.
+#include "pico_hdmi/hstx_packet.h"
+#include "hardware/timer.h"
+#include "i_picosound.h"
+#endif
 
 // 640x480@60 (VIC 1), negative sync, pixel clock = clk_hstx / 5 = 25.2 MHz
 // with the usual 252 MHz / MODE_HSTX_CLK_DIV=2 clocking.
@@ -61,12 +79,42 @@
 #define SYNC_V1_H0 (TMDS_CTRL_10 | (TMDS_CTRL_00 << 10) | (TMDS_CTRL_00 << 20))
 #define SYNC_V1_H1 (TMDS_CTRL_11 | (TMDS_CTRL_00 << 10) | (TMDS_CTRL_00 << 20))
 
+#define HSTX_CMD_RAW        (0x0u << 12)
 #define HSTX_CMD_RAW_REPEAT (0x1u << 12)
 #define HSTX_CMD_TMDS       (0x2u << 12)
 #define HSTX_CMD_NOP        (0xfu << 12)
 
 #define VBLANK_LINE_LEN 6
+
+#if PICODOOM_HDMI_DVI_MODE
 #define VACTIVE_LINE_LEN 9
+#else
+
+// Data island preamble inside the hsync pulse (pico_hdmi's placement):
+// lane 0 = sync V1/H0, lanes 1+2 = CTRL_01 (HDMI 1.3a Table 5-2).
+#define DI_PREAMBLE_V1_H0 (TMDS_CTRL_10 | (TMDS_CTRL_01 << 10) | (TMDS_CTRL_01 << 20))
+// Video preamble: lane 1 = CTRL_01, lane 2 = CTRL_00 (CTL0=1, rest 0).
+#define VIDEO_PREAMBLE_V1_H1 (TMDS_CTRL_11 | (TMDS_CTRL_01 << 10) | (TMDS_CTRL_00 << 20))
+// Video guard band, HDMI 1.3a Table 5-5.
+#define VIDEO_GUARD_BAND (0x2CCu | (0x133u << 10) | (0x2CCu << 20))
+
+#define W_VIDEO_PREAMBLE 8
+#define W_VIDEO_GUARD_BAND 2
+#define SYNC_AFTER_DI (H_SYNC_WIDTH - W_PREAMBLE - W_DATA_ISLAND) // 52
+
+// Active line header: front porch, preamble+island+rest inside the 96px
+// sync pulse, control, video preamble+guard, then the pixel command. The
+// 36-word island payload sits at VACTIVE_PAYLOAD_OFFSET.
+#define VACTIVE_HEAD_WORDS 56
+#define VACTIVE_PAYLOAD_OFFSET 7
+// Non-vsync blanking line with one static island, same head, no video tail.
+#define VBLANK_DI_WORDS 50
+#define ISLAND_LINES (V_TOTAL - V_ACTIVE - V_SYNC_WIDTH) // 43
+
+// Ring of active line headers: must cover the beam's progress while Core 1
+// is busy with the per-frame video rebuild (~3 ms ~ 95 lines).
+#define ACTIVE_RING 96
+#endif
 
 // Everything DMA reads per scanline lives in the top 64 KB of SRAM
 // (0x20070000-0x2007FFFF, banks 4-7): the linker never places anything there
@@ -78,7 +126,12 @@
 typedef struct {
     uint32_t vblank_vsync_off[VBLANK_LINE_LEN];
     uint32_t vblank_vsync_on[VBLANK_LINE_LEN];
+#if PICODOOM_HDMI_DVI_MODE
     uint32_t vactive[VACTIVE_LINE_LEN];
+#else
+    uint32_t vblank_di_lines[ISLAND_LINES][VBLANK_DI_WORDS];
+    uint32_t vactive_ring[ACTIVE_RING][VACTIVE_HEAD_WORDS];
+#endif
     uint32_t black_line[CONTENT_WIDTH / 2];
     // Per scanline: one 4-word slot for the line's command sequence, plus a
     // second slot with the pixel transfer on active lines; one null-trigger
@@ -93,6 +146,9 @@ _Static_assert(sizeof(scanout_ram_t) <= 0x10000, "scanout data must fit the free
 static int dma_pixel_channel = -1;
 static int dma_command_channel = -1;
 static volatile uint32_t cmdlist_frame_counter;
+#if !PICODOOM_HDMI_DVI_MODE
+static volatile uint32_t cmdlist_frame_irq_time_us;
+#endif
 
 uint32_t hstx_cmdlist_frame_number(void) {
     return cmdlist_frame_counter;
@@ -101,9 +157,162 @@ uint32_t hstx_cmdlist_frame_number(void) {
 static void __not_in_flash_func(cmdlist_frame_irq)(void) {
     dma_irqn_acknowledge_channel(2, dma_pixel_channel);
     cmdlist_frame_counter++;
+#if !PICODOOM_HDMI_DVI_MODE
+    cmdlist_frame_irq_time_us = time_us_32();
+#endif
     // Rewind the command list; this retriggers the whole next frame.
     dma_hw->ch[dma_command_channel].al3_read_addr_trig = (uintptr_t)scanout_ram->commands;
 }
+
+#if !PICODOOM_HDMI_DVI_MODE
+
+// Pre-encoded static islands (in-pulse variants: vsync idle, hsync asserted).
+static hstx_data_island_t acr_island;
+
+// Common head shared by active and blanking island lines: front porch, then
+// preamble + island + remaining sync inside the hsync pulse.
+static uint32_t *build_island_head(uint32_t *p, const uint32_t *island_words) {
+    *p++ = HSTX_CMD_RAW_REPEAT | H_FRONT_PORCH;
+    *p++ = SYNC_V1_H1;
+    *p++ = HSTX_CMD_NOP;
+    *p++ = HSTX_CMD_RAW_REPEAT | W_PREAMBLE;
+    *p++ = DI_PREAMBLE_V1_H0;
+    *p++ = HSTX_CMD_NOP;
+    *p++ = HSTX_CMD_RAW | W_DATA_ISLAND;
+    memcpy(p, island_words, W_DATA_ISLAND * sizeof(uint32_t));
+    p += W_DATA_ISLAND;
+    *p++ = HSTX_CMD_NOP;
+    *p++ = HSTX_CMD_RAW_REPEAT | SYNC_AFTER_DI;
+    *p++ = SYNC_V1_H0;
+    *p++ = HSTX_CMD_NOP;
+    return p;
+}
+
+static void build_island_lines(void) {
+    const uint32_t *null_island = hstx_get_null_data_island(false, true);
+
+    hstx_packet_t packet;
+    hstx_data_island_t island;
+
+    // 25.2 MHz pixel clock + 48 kHz is an exact lock: N=6144, CTS=25200.
+    hstx_packet_set_acr(&packet, 6144, 25200);
+    hstx_encode_data_island(&acr_island, &packet, false, true);
+
+    // Active line headers: null islands until the audio scheduler runs.
+    for (int i = 0; i < ACTIVE_RING; i++) {
+        uint32_t *p = build_island_head(scanout_ram->vactive_ring[i], null_island);
+        *p++ = HSTX_CMD_RAW_REPEAT | (H_BACK_PORCH - W_VIDEO_PREAMBLE - W_VIDEO_GUARD_BAND);
+        *p++ = SYNC_V1_H1;
+        *p++ = HSTX_CMD_NOP;
+        *p++ = HSTX_CMD_RAW_REPEAT | W_VIDEO_PREAMBLE;
+        *p++ = VIDEO_PREAMBLE_V1_H1;
+        *p++ = HSTX_CMD_NOP;
+        *p++ = HSTX_CMD_RAW_REPEAT | W_VIDEO_GUARD_BAND;
+        *p++ = VIDEO_GUARD_BAND;
+        *p++ = HSTX_CMD_TMDS | H_ACTIVE;
+        hard_assert(p == scanout_ram->vactive_ring[i] + VACTIVE_HEAD_WORDS);
+    }
+
+    // Blanking lines: static islands -- AVI infoframe on line 0, audio
+    // infoframe on line 1, null elsewhere (ACR rides the active schedule).
+    for (int line = 0; line < ISLAND_LINES; line++) {
+        const uint32_t *words = null_island;
+        if (line == 0) {
+            hstx_packet_set_avi_infoframe(&packet, 1, 0); // VIC 1 = 640x480@60
+            hstx_encode_data_island(&island, &packet, false, true);
+            words = island.words;
+        } else if (line == 1) {
+            hstx_packet_set_audio_infoframe(&packet, 48000, 2, 16);
+            hstx_encode_data_island(&island, &packet, false, true);
+            words = island.words;
+        }
+        uint32_t *p = build_island_head(scanout_ram->vblank_di_lines[line], words);
+        *p++ = HSTX_CMD_RAW_REPEAT | (H_BACK_PORCH + H_ACTIVE);
+        *p++ = SYNC_V1_H1;
+        *p++ = HSTX_CMD_NOP;
+        hard_assert(p == scanout_ram->vblank_di_lines[line] + VBLANK_DI_WORDS);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Audio scheduler: one island per active line, refilled ring-ahead-of-beam.
+// 800 samples/frame over 480 lines -> an audio packet (4 samples) roughly
+// every 2.4 lines; ACR every 48 lines (10/frame, evenly spaced). The
+// fractional accumulator keeps the long-term rate at exactly 48 kHz.
+// ---------------------------------------------------------------------------
+
+static uint32_t ring_write_line; // next active line index to fill (this frame)
+static uint32_t audio_acc;
+static int iec_frame_counter; // IEC 60958 192-frame block phase
+
+static void fill_one_active_line(uint32_t line) {
+    uint32_t *payload = &scanout_ram->vactive_ring[line % ACTIVE_RING][VACTIVE_PAYLOAD_OFFSET];
+
+    audio_acc += 800;
+    if ((line % 48) == 0) {
+        memcpy(payload, acr_island.words, sizeof(acr_island.words));
+        return;
+    }
+    if (audio_acc >= 1920) {
+        audio_acc -= 1920;
+        audio_sample_t samples[4];
+#if PICODOOM_HDMI_AUDIO_TEST_TONE
+        // 1 kHz square at 48 kHz: toggle every 24 samples. Validates the
+        // packet/island path independent of the game mixer.
+        static uint32_t tone_phase;
+        for (int i = 0; i < 4; i++) {
+            int16_t v = ((tone_phase++ / 24u) & 1u) ? 3000 : -3000;
+            samples[i].left = v;
+            samples[i].right = v;
+        }
+#else
+        I_PicoSoundPullStereo((int16_t *)samples, 4);
+#endif
+        hstx_packet_t packet;
+        hstx_data_island_t island;
+        iec_frame_counter = hstx_packet_set_audio_samples_cs(&packet, samples, 4, iec_frame_counter);
+        hstx_encode_data_island(&island, &packet, false, true);
+        memcpy(payload, island.words, sizeof(island.words));
+    } else {
+        memcpy(payload, hstx_get_null_data_island(false, true),
+               W_DATA_ISLAND * sizeof(uint32_t));
+    }
+}
+
+#if PICODOOM_HDMI_AUDIO_TEST_TONE == 2
+// Static-tone diagnostic: the schedule was baked into the ring at init
+// (exactly 40 audio packets per 96-line ring pass = 200/frame); islands are
+// never rewritten, eliminating refill dynamics from the experiment.
+void hstx_cmdlist_audio_frame_begin(void) {}
+void hstx_cmdlist_audio_poll(void) {}
+#else
+void hstx_cmdlist_audio_frame_begin(void) {
+    // Prefill the whole ring while the beam is still in vsync: covers the
+    // first ~3 ms of active video, i.e. the per-frame video rebuild window.
+    ring_write_line = 0;
+    while (ring_write_line < ACTIVE_RING) {
+        fill_one_active_line(ring_write_line++);
+    }
+}
+
+void hstx_cmdlist_audio_poll(void) {
+    while (ring_write_line < V_ACTIVE) {
+        // Active line currently being consumed (negative while in blanking):
+        // elapsed/31.746us per line, with 35 blanking lines before active.
+        uint32_t elapsed = time_us_32() - cmdlist_frame_irq_time_us;
+        int32_t beam = ((int32_t)elapsed - 1112) * 63 / 2000;
+        if ((int32_t)ring_write_line >= beam + ACTIVE_RING - 8) {
+            break; // far enough ahead; don't lap the beam
+        }
+        fill_one_active_line(ring_write_line++);
+    }
+}
+#endif
+
+#else
+void hstx_cmdlist_audio_frame_begin(void) {}
+void hstx_cmdlist_audio_poll(void) {}
+#endif // !PICODOOM_HDMI_DVI_MODE
 
 void hstx_cmdlist_scanout_start(const uint32_t *frame_base, uint32_t pitch_words,
                                 uint32_t frame_lines) {
@@ -134,6 +343,11 @@ void hstx_cmdlist_scanout_start(const uint32_t *frame_base, uint32_t pitch_words
         HSTX_CMD_RAW_REPEAT | (H_BACK_PORCH + H_ACTIVE),
         SYNC_V0_H1,
     };
+    memcpy(scanout_ram->vblank_vsync_off, vblank_vsync_off, sizeof(vblank_vsync_off));
+    memcpy(scanout_ram->vblank_vsync_on, vblank_vsync_on, sizeof(vblank_vsync_on));
+    memset(scanout_ram->black_line, 0, sizeof(scanout_ram->black_line));
+
+#if PICODOOM_HDMI_DVI_MODE
     const uint32_t vactive[VACTIVE_LINE_LEN] = {
         HSTX_CMD_RAW_REPEAT | H_FRONT_PORCH,
         SYNC_V1_H1,
@@ -145,10 +359,17 @@ void hstx_cmdlist_scanout_start(const uint32_t *frame_base, uint32_t pitch_words
         SYNC_V1_H1,
         HSTX_CMD_TMDS | H_ACTIVE,
     };
-    memcpy(scanout_ram->vblank_vsync_off, vblank_vsync_off, sizeof(vblank_vsync_off));
-    memcpy(scanout_ram->vblank_vsync_on, vblank_vsync_on, sizeof(vblank_vsync_on));
     memcpy(scanout_ram->vactive, vactive, sizeof(vactive));
-    memset(scanout_ram->black_line, 0, sizeof(scanout_ram->black_line));
+#else
+    build_island_lines();
+#if PICODOOM_HDMI_AUDIO_TEST_TONE == 2
+    // Bake the tone schedule into the ring once: 96 lines = exactly 40 audio
+    // packets (200/frame); never rewritten afterwards.
+    for (uint32_t line = 0; line < ACTIVE_RING; line++) {
+        fill_one_active_line(line);
+    }
+#endif
+#endif
 
     const uint32_t fifo_addr = (uint32_t)&hstx_fifo_hw->fifo;
     const uint32_t ctrl_base =
@@ -166,25 +387,36 @@ void hstx_cmdlist_scanout_start(const uint32_t *frame_base, uint32_t pitch_words
     uint32_t *cmd = scanout_ram->commands;
     const uint32_t active_start = V_SYNC_WIDTH + V_BACK_PORCH;
     const uint32_t active_end = active_start + V_ACTIVE;
+#if !PICODOOM_HDMI_DVI_MODE
+    uint32_t island_line_index = 0;
+#endif
     for (uint32_t v = 0; v < V_TOTAL; v++) {
-        const uint32_t *line_seq;
-        uint32_t line_seq_len;
         if (v < V_SYNC_WIDTH) {
-            line_seq = scanout_ram->vblank_vsync_on;
-            line_seq_len = VBLANK_LINE_LEN;
+            *cmd++ = ctrl_cmd32;
+            *cmd++ = fifo_addr;
+            *cmd++ = VBLANK_LINE_LEN;
+            *cmd++ = (uintptr_t)scanout_ram->vblank_vsync_on;
         } else if (v < active_start || v >= active_end) {
-            line_seq = scanout_ram->vblank_vsync_off;
-            line_seq_len = VBLANK_LINE_LEN;
+            *cmd++ = ctrl_cmd32;
+            *cmd++ = fifo_addr;
+#if PICODOOM_HDMI_DVI_MODE
+            *cmd++ = VBLANK_LINE_LEN;
+            *cmd++ = (uintptr_t)scanout_ram->vblank_vsync_off;
+#else
+            *cmd++ = VBLANK_DI_WORDS;
+            *cmd++ = (uintptr_t)scanout_ram->vblank_di_lines[island_line_index++];
+#endif
         } else {
-            line_seq = scanout_ram->vactive;
-            line_seq_len = VACTIVE_LINE_LEN;
-        }
-        *cmd++ = ctrl_cmd32;
-        *cmd++ = fifo_addr;
-        *cmd++ = line_seq_len;
-        *cmd++ = (uintptr_t)line_seq;
-        if (line_seq_len == VACTIVE_LINE_LEN) {
             uint32_t active_line = v - active_start;
+            *cmd++ = ctrl_cmd32;
+            *cmd++ = fifo_addr;
+#if PICODOOM_HDMI_DVI_MODE
+            *cmd++ = VACTIVE_LINE_LEN;
+            *cmd++ = (uintptr_t)scanout_ram->vactive;
+#else
+            *cmd++ = VACTIVE_HEAD_WORDS;
+            *cmd++ = (uintptr_t)scanout_ram->vactive_ring[active_line % ACTIVE_RING];
+#endif
             const uint32_t *row;
             if (active_line < LETTERBOX_TOP || active_line >= LETTERBOX_TOP + 2 * frame_lines) {
                 row = scanout_ram->black_line;

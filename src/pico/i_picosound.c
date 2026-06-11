@@ -35,6 +35,11 @@
 // #include "pico/audio_i2s.h" // Audio hardware disabled
 #include "pico/binary_info.h"
 #include "hardware/gpio.h"
+#include "hardware/sync.h"
+#include "hardware/timer.h"
+#include "pico/bootrom.h"
+#include "pico/stdio.h"
+#include <stdio.h>
 
 #define ADPCM_BLOCK_SIZE 128
 #define ADPCM_SAMPLES_PER_BLOCK_SIZE 249
@@ -65,21 +70,38 @@ struct channel_s
     int8_t decompressed[ADPCM_SAMPLES_PER_BLOCK_SIZE];
 };
 
-// Audio hardware disabled - I2S infrastructure commented out
-#if 0
-static struct audio_buffer_pool *producer_pool;
-
-static struct audio_format audio_format = {
-        .format = AUDIO_BUFFER_FORMAT_PCM_S16,
-        .sample_freq = PICO_SOUND_SAMPLE_FREQ,
-        .channel_count = 2,
-};
-
-static struct audio_buffer_format producer_format = {
-        .format = &audio_format,
-        .sample_stride = 4
-};
+// HDMI audio output: Core 0 mixes SFX + music into a lock-free ring of
+// interleaved stereo pairs; Core 1's command-list data-island writer pulls
+// exactly 800 pairs per video frame (48 kHz) via I_PicoSoundPullStereo().
+#ifndef PICODOOM_HDMI_LITE
+#define PICODOOM_HDMI_LITE 0
 #endif
+
+#define AUDIO_RING_PAIRS 2048u // power of two; ~43 ms of buffering
+#if PICODOOM_HDMI_LITE
+// Keep the 8 KB ring out of BSS so the zone keeps its headroom: park it in
+// the free top-of-SRAM region (layout + overlap asserts in
+// hdmi_lite_layout.h).
+#include "hdmi_lite_layout.h"
+static int16_t *const audio_ring = (int16_t *)HDMI_LITE_AUDIO_RING_ADDR;
+_Static_assert(AUDIO_RING_PAIRS * 2 * sizeof(int16_t) <= HDMI_LITE_AUDIO_RING_BYTES,
+               "audio ring overflows its region slot");
+#else
+static int16_t audio_ring[AUDIO_RING_PAIRS * 2];
+#endif
+static volatile uint32_t audio_ring_head; // free-running, producer (Core 0)
+static volatile uint32_t audio_ring_tail; // free-running, consumer (Core 1)
+
+#define MIX_CHUNK_PAIRS 128u
+static int16_t mix_chunk[MIX_CHUNK_PAIRS * 2];
+static audio_buffer_bytes_t mix_chunk_bytes = {
+        .bytes = (uint8_t *)mix_chunk,
+        .size = sizeof(mix_chunk),
+};
+static audio_buffer_t mix_chunk_buffer = {
+        .buffer = &mix_chunk_bytes,
+        .max_sample_count = MIX_CHUNK_PAIRS,
+};
 
 // ====== FROM ADPCM-LIB =====
 #define CLIP(data, min, max) \
@@ -109,7 +131,7 @@ static const int index_table[] = {
 };
 // =============================
 
-// static void (*music_generator)(audio_buffer_t *buffer); // Audio hardware disabled
+static void (*music_generator)(audio_buffer_t *buffer);
 
 static boolean sound_initialized = false;
 static channel_t channels[NUM_SOUND_CHANNELS];
@@ -304,16 +326,20 @@ static void I_Pico_UpdateSoundParams(int handle, int vol, int sep)
     channels[handle].right = right;
 }
 
+extern volatile uint32_t hdmi_diag_checkpoint;
+
 static int I_Pico_StartSound(should_be_const sfxinfo_t *sfxinfo, int channel, int vol, int sep, int pitch)
 {
     if (!check_and_init_channel(channel)) return -1;
 
+    hdmi_diag_checkpoint = 50;
     stop_channel(channel);
     channel_t *ch = &channels[channel];
     if (!init_channel_for_sfx(ch, sfxinfo, pitch)) {
         assert(!is_channel_playing(channel)); // don't expect to have to mark it sotpped
     }
     I_Pico_UpdateSoundParams(channel, vol, sep);
+    hdmi_diag_checkpoint = 51;
     return channel;
 }
 
@@ -330,9 +356,139 @@ static boolean I_Pico_SoundIsPlaying(int channel)
     return is_channel_playing(channel);
 }
 
+// Mix one MIX_CHUNK_PAIRS chunk of music + SFX into mix_chunk.
+// Mixing logic matches upstream rp2040-doom's I2S buffer fill.
+static void mix_one_chunk(void)
+{
+    if (music_generator) {
+        hdmi_diag_checkpoint = 62;
+        music_generator(&mix_chunk_buffer);
+        hdmi_diag_checkpoint = 63;
+    } else {
+        memset(mix_chunk, 0, sizeof(mix_chunk));
+    }
+    for (int ch = 0; ch < NUM_SOUND_CHANNELS; ch++) {
+        if (is_channel_playing(ch)) {
+            channel_t *channel = &channels[ch];
+            assert(channel->decompressed_size);
+            int voll = channel->left / 2;
+            int volr = channel->right / 2;
+            uint offset_end = channel->decompressed_size * 65536;
+            assert(channel->offset < offset_end);
+            int16_t *samples = mix_chunk;
+#if SOUND_LOW_PASS
+            int alpha256 = channel->alpha256;
+            int beta256 = 256 - alpha256;
+            int sample = channel->decompressed[channel->offset >> 16];
+#endif
+            for (uint s = 0; s < MIX_CHUNK_PAIRS; s++) {
+#if !SOUND_LOW_PASS
+                int sample = channel->decompressed[channel->offset >> 16];
+#else
+                sample = (beta256 * sample + alpha256 * channel->decompressed[channel->offset >> 16]) / 256;
+#endif
+                *samples++ += sample * voll;
+                *samples++ += sample * volr;
+                channel->offset += channel->step;
+                if (channel->offset >= offset_end) {
+                    channel->offset -= offset_end;
+                    decompress_buffer(channel);
+                    offset_end = channel->decompressed_size * 65536;
+                    if (channel->offset >= offset_end) {
+                        stop_channel(ch);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (fade_state == FS_SILENT) {
+        memset(mix_chunk, 0, sizeof(mix_chunk));
+    } else if (fade_state != FS_NONE) {
+        int16_t *samples = mix_chunk;
+        int fade_step = fade_state == FS_FADE_IN ? FADE_STEP : -FADE_STEP;
+        uint i;
+        for (i = 0; i < MIX_CHUNK_PAIRS * 2 && fade_level; i += 2) {
+            samples[i] = (samples[i] * (int)fade_level) >> 16;
+            samples[i + 1] = (samples[i + 1] * (int)fade_level) >> 16;
+            fade_level += fade_step;
+        }
+        if (!fade_level) {
+            if (fade_state == FS_FADE_OUT) {
+                for (; i < MIX_CHUNK_PAIRS * 2; i++) {
+                    samples[i] = 0;
+                }
+                fade_state = FS_SILENT;
+            } else {
+                fade_state = FS_NONE;
+            }
+        }
+    }
+}
+
 static void I_Pico_UpdateSound(void)
 {
-    // Audio hardware disabled - no I2S output
+    if (!sound_initialized) return;
+
+#if PICO_ON_DEVICE
+    // UART backdoor into BOOTSEL (USB runs in host mode, picotool can't):
+    // send the two bytes 0x02 'B' (Ctrl-B, B) to the stdio UART.
+    {
+        static int prev_ch = -1;
+        int ch_in = getchar_timeout_us(0);
+        if (ch_in >= 0) {
+            if (prev_ch == 0x02 && ch_in == 'B') {
+                reset_usb_boot(0, 0);
+            }
+            prev_ch = ch_in;
+        }
+    }
+    // Once per ~5s over UART: is the mixer producing and is HDMI draining?
+    {
+        static uint32_t next_report_us;
+        uint32_t now = time_us_32();
+        if ((int32_t)(now - next_report_us) >= 0) {
+            next_report_us = now + 5000000u;
+            printf("audio ring: mixed=%u pulled=%u music=%d\n",
+                   (unsigned)audio_ring_head, (unsigned)audio_ring_tail,
+                   music_generator != NULL);
+        }
+    }
+#endif
+
+    // Top up the ring; the HDMI side drains exactly 800 pairs per 60 Hz frame.
+    hdmi_diag_checkpoint = 60;
+    while (AUDIO_RING_PAIRS - (audio_ring_head - audio_ring_tail) >= MIX_CHUNK_PAIRS) {
+        mix_one_chunk();
+        uint32_t head = audio_ring_head;
+        uint32_t idx = head & (AUDIO_RING_PAIRS - 1);
+        uint32_t first = MIN(MIX_CHUNK_PAIRS, AUDIO_RING_PAIRS - idx);
+        memcpy(&audio_ring[idx * 2], mix_chunk, first * 2 * sizeof(int16_t));
+        if (first < MIX_CHUNK_PAIRS) {
+            memcpy(audio_ring, &mix_chunk[first * 2], (MIX_CHUNK_PAIRS - first) * 2 * sizeof(int16_t));
+        }
+        __mem_fence_release();
+        audio_ring_head = head + MIX_CHUNK_PAIRS;
+    }
+    hdmi_diag_checkpoint = 61;
+}
+
+int I_PicoSoundPullStereo(int16_t *dst, int sample_pairs)
+{
+    uint32_t tail = audio_ring_tail;
+    uint32_t avail = audio_ring_head - tail;
+    __mem_fence_acquire();
+    uint32_t n = MIN(avail, (uint32_t)sample_pairs);
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t idx = (tail + i) & (AUDIO_RING_PAIRS - 1);
+        dst[i * 2] = audio_ring[idx * 2];
+        dst[i * 2 + 1] = audio_ring[idx * 2 + 1];
+    }
+    if ((int)n < sample_pairs) {
+        memset(&dst[n * 2], 0, (sample_pairs - n) * 2 * sizeof(int16_t));
+    }
+    audio_ring_tail = tail + n;
+    return (int)n;
 }
 
 static void I_Pico_ShutdownSound(void)
@@ -347,9 +503,10 @@ static void I_Pico_ShutdownSound(void)
 static boolean I_Pico_InitSound(boolean _use_sfx_prefix)
 {
     use_sfx_prefix = _use_sfx_prefix;
-    // Audio hardware disabled - no I2S output
-    sound_initialized = false;
-    return false;
+    // No audio hardware to set up: output is HDMI data islands fed from the
+    // sample ring by Core 1's command-list writer.
+    sound_initialized = true;
+    return true;
 }
 
 static snddevice_t sound_pico_devices[] =
@@ -376,8 +533,21 @@ bool I_PicoSoundIsInitialized(void) {
     return sound_initialized;
 }
 
+// Diagnostic accessors (e.g. for on-screen audio status stripes).
+uint32_t I_PicoSoundMixedCount(void) {
+    return audio_ring_head;
+}
+
+uint32_t I_PicoSoundPulledCount(void) {
+    return audio_ring_tail;
+}
+
+bool I_PicoSoundMusicActive(void) {
+    return music_generator != NULL;
+}
+
 void I_PicoSoundSetMusicGenerator(void (*generator)(audio_buffer_t *buffer)) {
-    // Audio hardware disabled - music generator not used
+    music_generator = generator;
 }
 
 #if PICO_ON_DEVICE

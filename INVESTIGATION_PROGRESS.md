@@ -263,3 +263,157 @@ Consequences:
 - Next polish candidates: full-screen stretch (row*200/480, drop letterbox),
   tear avoidance (double-buffer the RGB565 frame or rebuild paced to the
   per-frame IRQ phase).
+
+## HDMI audio attempt over cmdlist (2026-06-10, UNRESOLVED -> pivot)
+
+Goal: HDMI audio without giving up the command-list scanout. Evidence trail:
+
+1. HDMI-mode cmdlist (islands in idle region after hsync, multi-island vblank
+   lines): RT4K decoded AVI (VIC1/RGB) + audio infoframe (48kHz 2ch LPCM) --
+   islands/BCH/TERC4/encoder all work over the cmdlist transport. Audio
+   bunched into vblank (200 packets in 1.4ms, 15ms gap) -> silent (sink FIFO
+   burst/starve; real sources always spread packets).
+2. Rewrote: one island per ACTIVE line inside the hsync pulse (pico_hdmi's
+   placement), 96-line ring refilled ahead of beam, ACR every 48 lines,
+   AVI/AIF on two vblank lines. Test tone injected at the encoder. Silent.
+3. Added proper IEC60958 channel status (hstx_packet_set_audio_samples_cs in
+   pico_hdmi, 48kHz consumer L-PCM + parity over VUC). Silent on RT4K AND
+   direct TV.
+4. **pico_hdmi bouncing-box demo plays music fine on the same hardware/sink**
+   -> encoder + sink + in-pulse placement proven good via pico_hdmi's
+   ping/pong ISR transport.
+5. Host-side diff (/tmp/hstx_line_diff.c): my active-line-with-island buffer
+   is word-for-word IDENTICAL to pico_hdmi's build_line_with_di output (56
+   words, same null island). Content equality proven.
+6. Static-tone build (PICODOOM_HDMI_AUDIO_TEST_TONE=2: schedule baked into
+   the ring at init, ZERO dynamic writes): still silent.
+
+Conclusion: identical line content played through the cmdlist DMA transport
+is silent while pico_hdmi's ISR transport plays -- the differentiator is
+unidentified (suspects exhausted: content, dynamics, channel status, burst
+pacing, sink strictness). NOTE: infoframe decode was only ever confirmed for
+the idle-region placement (step 1); never re-confirmed for the in-pulse
+builds, so possibly NO island decodes in-pulse via cmdlist -- unexplained
+since content is identical.
+
+### Further evidence (same day)
+- ALL standalone pico_hdmi demos play audio: bouncing_box 480p (islands
+  IN-PULSE, sync 96px), directvideo_240p (in-pulse, sync 192px),
+  bouncing_box_rt 720p (back-porch idle region). So in-pulse islands at 480p
+  ARE accepted by the sink -- via pico_hdmi's ping/pong transport.
+- `build-picohdmi-audio/` (pico_hdmi transport inside the Doom build:
+  HDMI mode, solid-pointer video, tone pumped into hstx_di_queue from
+  core1_background_task, 252 MHz / div 2): **TONE PLAYS** -- audio proven in
+  our environment/clocking/lib version -- **but sync drops after ~1 s**:
+  pico_hdmi's HDMI mode runs build_line_with_di in the scanline ISR, which
+  re-creates the ISR-deadline failure under live Doom.
+- Net: cmdlist = stable video + mute audio; pico_hdmi ISR = working audio +
+  dropped sync. The cmdlist audio mystery remains unexplained (identical
+  line content, same clocking, same encode) -- suspicion now narrows to
+  DMA chain-gap timing at slot boundaries vs pico_hdmi's contiguous
+  whole-line transfers, but unverified.
+
+### Decision: pivot to "pico_hdmi-lite" (user-proposed)
+Keep pico_hdmi's per-line ISR runtime (the exact path the demo proves works
+for audio), but strip the ISR of what made it drop sync -- rendering. The
+diagnostics history shows pointer-only ISR was stable under live Doom
+(build-solid-pointer-live). Plan:
+- B1: pico_hdmi runtime at 252MHz/div2, solid-color pointer callback, audio
+  pump (encode 4-sample islands from i_picosound ring -> hstx_di_queue).
+  Expect: stable video + test tone. Proves audio in our integration.
+- B2: pointer callback returns native 320px RGB565 frame rows; pixel-data DMA
+  switched to 16-bit (bus replication, like cmdlist) so the ISR does pointer
+  arithmetic only -- no 640-wide expansion, no rendering in ISR.
+- The audio ring/mixer in i_picosound.c (this session) carries over as-is.
+- cmdlist backend stays as the proven DVI/video-only fallback
+  (PICODOOM_HDMI_CMDLIST=1 + DVI_MODE=1).
+
+## Plan (2026-06-11): integration ladder to "flawless"
+
+### State assessment
+The LITE pivot is fully implemented in the working tree (uncommitted):
+- `pico_hdmi`: `PICO_HDMI_PRECOMPOSED_ACTIVE_LINES` compose ring (ISR =
+  pointer lookup + tag check, stale entry -> static null island), native
+  16-bit pixel DMA mode (per-post ctrl swap, resync-safe),
+  `hstx_packet_set_audio_samples_cs`, `video_output_in_vertical_blanking`,
+  optional scratch-Y line buffer.
+- Parent: `PICODOOM_HDMI_LITE=1` wiring; 48 kHz mixer ring in
+  `i_picosound.c` (SFX + music, `I_PicoSoundPullStereo` consumer API);
+  hand-managed 0x20070000 region layout (compose ring 0x20070000, audio
+  ring 0x20077800, diag canvas 0x20079800, status buffer 0x2007D400);
+  on-screen diag overlay + checkpoint breadcrumbs; USB-CDC diag plumbing
+  (`PICODOOM_CDC_WAIT`, tusb device mode for non-USB targets, BOOTSEL
+  backdoors via UART 0x02+'B' and Ctrl+Alt+Del).
+- Last builds: `build-lite` (LITE, doom_tiny_usb), `build-diag` (LITE,
+  doom_tiny + CDC), `build-diag2` (cmdlist DVI control, doom_tiny + CDC).
+  **Hardware outcomes of these were not recorded** — re-establish ground
+  truth at the next bench session and log it here.
+
+### Architecture decision (locked)
+**Primary: LITE.** Rationale: the per-line ISR workload is now <= the
+proven-stable solid-pointer build (pointer swap only); the DMA reads of
+`hdmi_rgb565_frame` are proven harmless by cmdlist stability; the audio
+rides the exact ping/pong transport that `build-picohdmi-audio` and all
+pico_hdmi demos prove works on this hardware/clocking.
+**Fallback (video):** cmdlist DVI (`build-cmdlist`) — always-good baseline.
+**Fallback (audio), only if LITE fails a gate unrecoverably:** cmdlist DVI
+video + external I2S DAC (fruitjam-doom approach); the mixer ring carries
+over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
+
+### Pre-gate fixes (code, before any flashing)
+1. **Compose-ring starvation (likely the LITE audio-breaker).** Ring lead is
+   96-8 = 88 lines ~= 2.8 ms, but Core 1's per-frame RGB565 rebuild (~3 ms)
+   runs every frame WITHOUT servicing the ring -> stale entries -> null-island
+   fallback -> already-dequeued audio packets silently dropped every frame.
+   Fix: interleave `video_output_compose_service()` (+ audio pump) into the
+   rebuild loop every ~16 rows. Also add an ISR counter for stale-ring
+   fallbacks ("ST" on the overlay) so this failure mode is *visible*.
+2. **Region-layout asserts.** The four magic 0x2007xxxx addresses live in two
+   files; move them to one header with static asserts (sizes, no overlap,
+   fits 64 KB) so a future buffer resize can't silently collide.
+3. Commit the working tree (parent branch + nested pico_hdmi) as the
+   baseline before gate testing; every gate result gets logged here.
+
+### Gate ladder (one variable per gate; binary observable; log result)
+- **G1 control:** reflash `build-cmdlist` (DVI). Expect: smooth game, mute.
+  Confirms environment unchanged.
+- **G2 transport at rest:** LITE + `AUDIO_TEST_TONE=1` +
+  `IDLE_AFTER_FIRST_DISPLAY=1`. Expect: static game frame + clean continuous
+  1 kHz tone, fe=0, ST=0. Proves compose ring + native 16-bit DMA + in-pulse
+  islands without Core 0 load.
+- **G3 transport under load:** LITE + `AUDIO_TEST_TONE=1`, live game.
+  Expect: smooth gameplay + uninterrupted tone >= 10 min, fe=0, ST=0.
+  Proves the per-line deadline holds under full Core 0 contention.
+- **G4 game SFX:** LITE, tone off, music generator left NULL. Expect: menu
+  pistol/door sounds, MX/PL counters advancing together.
+- **G5 music:** enable OPL music. Expect: E1M1 music + SFX mixed; cp walks
+  31->34 on level change and never hits 99 (zone OOM); print `Z_FreeMemory`
+  after `S_ChangeMusic` once.
+- **G6 soak + edges:** 30-60 min attract/demo loop; level transitions;
+  save+load during play (flash writes vs scanout); pause/menu; wipes back on
+  (`SKIP_WIPES=0`); throttle removed (`RENDER_THROTTLE_US=0`); both sinks
+  (RT4K and TV direct).
+- **G7 productionize:** diag overlay/CDC/backdoors default-off;
+  `doom_tiny_usb` (USB-host keyboard, UART stdio) as shipping target;
+  `flash.sh`/`build-min` repointed at the final config; docs + memory
+  updated; commit; keep the final build dir as the new known-good.
+
+### Contingencies
+- G2 silent: bisect compose ring vs native DMA (force legacy in-ISR compose
+  with Core 0 idle — known to play — and diff); check
+  `samples_per_line_fp` pacing and `hstx_di_queue_tick` semantics.
+- G3 drops sync: fe>0 = FIFO starvation -> try
+  `PICO_HDMI_LINE_BUFFER_IN_SCRATCH_Y=1`, larger ring lead; if unfixable,
+  fall back to cmdlist DVI + I2S DAC.
+- G3 tone gaps with ST>0: rebuild chunking too coarse / ring too small —
+  shrink chunk, grow ring (region has ~1 KB spare; steal from diag canvas).
+- G5 zone OOM (cp=99): measure first; reclaim by disabling diag buffers in
+  production; note rp2040-doom shipped sound+music in 264 KB total, so the
+  ~75 KB zone should suffice.
+
+### Post-flawless polish backlog (do not mix into the gates)
+Tear: rebuild already starts at frame IRQ; vblank+letterbox (~2.9 ms) nearly
+covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen
+stretch (`row*200/480`). Core 1 render assist: evaluate FPS first; it
+competes with compose deadlines under LITE, so only revisit if needed.
+cmdlist HDMI-audio mystery: parked indefinitely.

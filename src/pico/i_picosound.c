@@ -367,8 +367,10 @@ static void mix_one_chunk(void)
         if (is_channel_playing(ch)) {
             channel_t *channel = &channels[ch];
             assert(channel->decompressed_size);
-            int voll = channel->left / 2;
-            int volr = channel->right / 2;
+            // Full volume (upstream halved it); the saturating adds below
+            // provide the headroom protection instead.
+            int voll = channel->left;
+            int volr = channel->right;
             uint offset_end = channel->decompressed_size * 65536;
             assert(channel->offset < offset_end);
             int16_t *samples = mix_chunk;
@@ -383,8 +385,12 @@ static void mix_one_chunk(void)
 #else
                 sample = (beta256 * sample + alpha256 * channel->decompressed[channel->offset >> 16]) / 256;
 #endif
-                *samples++ += sample * voll;
-                *samples++ += sample * volr;
+                int32_t l = samples[0] + sample * voll;
+                int32_t r = samples[1] + sample * volr;
+                if (l > 32767) l = 32767; else if (l < -32768) l = -32768;
+                if (r > 32767) r = 32767; else if (r < -32768) r = -32768;
+                *samples++ = (int16_t)l;
+                *samples++ = (int16_t)r;
                 channel->offset += channel->step;
                 if (channel->offset >= offset_end) {
                     channel->offset -= offset_end;

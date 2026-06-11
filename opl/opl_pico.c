@@ -263,9 +263,15 @@ void OPL_Pico_Mix_callback(audio_buffer_t *audio_buffer)
         }
         audio_buffer->sample_count = audio_buffer->max_sample_count;
 #if !USE_WOODY_OPL
+        // x8 makeup gain, SATURATED: the old `<<= 3` wrapped int16 on loud
+        // passages -- hard digital distortion on exactly the notes that
+        // should sound big.
         int16_t *samples = (int16_t *)audio_buffer->buffer->bytes;
         for(uint i=0;i<audio_buffer->sample_count * 2; i++) {
-            samples[i] <<= 3;
+            int32_t v = (int32_t)samples[i] << 3;
+            if (v > 32767) v = 32767;
+            else if (v < -32768) v = -32768;
+            samples[i] = (int16_t)v;
         }
 #endif
 //#if PICO_ON_DEVICE

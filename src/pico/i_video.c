@@ -357,6 +357,11 @@ uint8_t *wipe_yoffsets; // position of start of y in each column
 int16_t *wipe_yoffsets_raw;
 uint32_t *wipe_linelookup; // offset of each line from start of screenbuffer (can be negative for FB 1 to FB 0)
 uint8_t next_video_type;
+#if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
+// Pre-demotion video type (stage 3 demotes DOUBLE/WIPE to SINGLE for the
+// lighter scanline path; the bottom-32-row source still depends on this).
+static uint8_t display_video_type_raw;
+#endif
 uint8_t next_frame_index; // todo combine with video type?
 uint8_t next_overlay_index;
 #if !DEMO1_ONLY
@@ -428,7 +433,16 @@ static void __scratch_x("doom_scanline") scanline_func_single(uint32_t *dest, in
         src = frame_buffer[display_frame_index] + scanline * SCREENWIDTH;
     } else {
 #if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
-        src = hdmi_status_buffer + (scanline - MAIN_VIEWHEIGHT) * SCREENWIDTH;
+        if (display_video_type_raw == VIDEO_TYPE_DOUBLE ||
+            display_video_type_raw == VIDEO_TYPE_WIPE) {
+            // Demoted gameplay frame: bottom rows are the pre-rendered
+            // status bar.
+            src = hdmi_status_buffer + (scanline - MAIN_VIEWHEIGHT) * SCREENWIDTH;
+        } else {
+            // True full-screen image (splash/title/help): the bottom 32 rows
+            // live at the end of the other framebuffer.
+            src = frame_buffer[display_frame_index^1] + (scanline - 32) * SCREENWIDTH;
+        }
 #else
         src = frame_buffer[display_frame_index^1] + (scanline - 32) * SCREENWIDTH;
 #endif
@@ -818,7 +832,11 @@ void __no_inline_not_in_flash_func(new_frame_stuff)() {
         hdmi_diag_frameconsume_count++;
         display_video_type = next_video_type;
 #if defined(PICODOOM_HDMI_DIAG_STAGE) && PICODOOM_HDMI_DIAG_STAGE >= 3
-        // Stage 3 stability mode: prefer the lightest scanline path.
+        // Stage 3 stability mode: prefer the lightest scanline path. Keep
+        // the pre-demotion type: scanline_func_single must source the bottom
+        // 32 rows from the status buffer for demoted gameplay frames, but
+        // from the other framebuffer for true full-screen images (splash).
+        display_video_type_raw = display_video_type;
         if (display_video_type == VIDEO_TYPE_DOUBLE || display_video_type == VIDEO_TYPE_WIPE) {
             display_video_type = VIDEO_TYPE_SINGLE;
         }

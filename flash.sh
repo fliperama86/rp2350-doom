@@ -43,6 +43,15 @@ if [[ ! -f "$WHX_FILE" ]]; then
     exit 1
 fi
 
+# The UF2 advertises its WHX load address via binary_info ("WHX at 0x...");
+# trust the binary over the hardcoded default so relocated builds (e.g.
+# 0x10080000 on 16 MB boards) flash correctly.
+DETECTED_ADDR=$(picotool info "$UF2_FILE" 2>/dev/null | sed -n 's/.*WHX at \(0x[0-9a-fA-F]*\).*/\1/p' | head -1 || true)
+if [[ -n "${DETECTED_ADDR}" ]]; then
+    WHX_ADDR="$DETECTED_ADDR"
+fi
+echo "WHX address: $WHX_ADDR"
+
 picotool load -v -F "$UF2_FILE"
 picotool load -v -t bin "$WHX_FILE" -o "$WHX_ADDR"
 picotool reboot -a

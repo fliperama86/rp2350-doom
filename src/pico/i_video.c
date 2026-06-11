@@ -1444,11 +1444,13 @@ static const uint32_t *__scratch_x("doom_scanline") hdmi_lite_pointer_callback(u
             hdmi_lite_fifo_empty_events++;
         }
     }
+#if PICODOOM_DIAG_OVERLAY
     // Diag text overlays the top of the picture area (TV overscan clips the
     // letterbox region).
     if (active_line >= 56 && active_line < 56 + HDMI_LITE_TEXT_ROWS) {
         return (const uint32_t *)hdmi_lite_text_canvas[active_line - 56];
     }
+#endif
     if (active_line < LETTERBOX_TOP || active_line >= LETTERBOX_BOTTOM ||
         display_video_type == VIDEO_TYPE_NONE || !hdmi_rgb565_frame_ready) {
         return hdmi_lite_black_row;
@@ -1608,6 +1610,7 @@ static void core1_background_task(void) {
     hdmi_audio_pump();
 #endif
 #if PICODOOM_HDMI_LITE
+#if PICODOOM_DIAG_OVERLAY
     if (hdmi_vsync_pending) {
         // On-screen telemetry only. NO printf anywhere on Core 1: a single
         // UART line blocks ~7 ms on the stdio path and starves everything
@@ -1615,6 +1618,7 @@ static void core1_background_task(void) {
         // ISR took over the island schedule).
         hdmi_lite_update_diag_rows();
     }
+#endif
     // Frame-pacing watchdog: a desynced HSTX command stream makes scanlines
     // "complete" at bus speed (observed: LED heartbeat speeding up after a
     // sync drop). >12 vsyncs in a 100 ms window (expected: 6) = desync;

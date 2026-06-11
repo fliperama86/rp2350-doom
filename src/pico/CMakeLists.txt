@@ -94,6 +94,12 @@ if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
     message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
 endif()
 
+set(PICODOOM_DIAG_OVERLAY "1" CACHE STRING "Show the on-screen diagnostic counter overlay in LITE builds (0 for release; counters still maintained)")
+set_property(CACHE PICODOOM_DIAG_OVERLAY PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_DIAG_OVERLAY MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_DIAG_OVERLAY must be 0 or 1")
+endif()
+
 set(PICODOOM_EMU8950_ASM "1" CACHE STRING "Use the RP2040-era slot-render ARM asm (0 = equivalent C path, for the music-runaway bisect)")
 set_property(CACHE PICODOOM_EMU8950_ASM PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_EMU8950_ASM MATCHES "^[01]$")
@@ -255,6 +261,7 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_BOOT_HALT=${PICODOOM_BOOT_HALT}
         PICODOOM_NO_MUSIC=${PICODOOM_NO_MUSIC}
         PICODOOM_NO_SFX=${PICODOOM_NO_SFX}
+        PICODOOM_DIAG_OVERLAY=${PICODOOM_DIAG_OVERLAY}
         PICODOOM_HDMI_AUDIO_TEST_TONE=${PICODOOM_HDMI_AUDIO_TEST_TONE}
         $<$<BOOL:${PICODOOM_HDMI_240P}>:VIDEO_MODE_320x240=1>
         PICODOOM_SOLID_COLOR=${PICODOOM_SOLID_COLOR}

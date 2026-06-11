@@ -548,6 +548,14 @@ music is ~3.45% flat/slow. Fix candidates: feed OPL_calc through a simple
 49716→48000 fractional resampler in the mixer, or pace AdvanceTime in chip
 samples. Do AFTER confirming music is otherwise clean.
 
+### v0.1.2 (2026-06-11): user-blessed release build
+`build-rel` = LITE + C OPL renderer (PICODOOM_EMU8950_ASM=0) + overlay off
+(PICODOOM_DIAG_OVERLAY=0) + throttle 0 + WHX at 0x10080000 + WASD/J/K
+keyboard-only bindings + F11 FPS toggle. User: "feels faster", music clean,
+gameplay good. Sync drop has NOT recurred on the no-asm renderer
+(interp-clobber theory; RS watchdog remains as the safety net — long soak
+still outstanding before declaring it dead).
+
 ### Post-flawless polish backlog (do not mix into the gates)
 Tear: rebuild already starts at frame IRQ; vblank+letterbox (~2.9 ms) nearly
 covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen

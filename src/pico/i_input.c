@@ -39,6 +39,18 @@
 #include "tusb.h"
 #include "hardware/irq.h"
 bi_decl(bi_program_feature("USB keyboard support"));
+
+// On-screen USB diagnostics (shown on the LITE overlay, no UART needed):
+// device-level mounts, HID interface mounts, keyboard reports received.
+// Splits "never enumerates" / "no HID" / "no reports" / "input layer".
+volatile uint32_t hdmi_diag_usb_mount_count;
+volatile uint32_t hdmi_diag_hid_mount_count;
+volatile uint32_t hdmi_diag_kbd_report_count;
+
+void tuh_mount_cb(uint8_t dev_addr) {
+    (void)dev_addr;
+    hdmi_diag_usb_mount_count++;
+}
 #endif
 
 static const int scancode_translate_table[] = SCANCODE_TO_KEYS_ARRAY;
@@ -596,6 +608,7 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
 // therefore report_desc = NULL, desc_len = 0
 void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_report, uint16_t desc_len)
 {
+    hdmi_diag_hid_mount_count++;
     debug_printf("HID device address = %d, instance = %d is mounted\r\n", dev_addr, instance);
 
     // Interface protocol (hid_interface_protocol_enum_t)
@@ -686,6 +699,8 @@ static void check_mod(int mod, int prev_mod, int mask, int scancode) {
 static void process_kbd_report(hid_keyboard_report_t const *report)
 {
     static hid_keyboard_report_t prev_report = { 0, 0, {0} }; // previous report to check key released
+
+    hdmi_diag_kbd_report_count++;
 
     // Ctrl+Alt+Del reboots into BOOTSEL: the USB port runs in host mode, so
     // picotool has no device interface to trigger the bootloader through.

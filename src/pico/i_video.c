@@ -1361,6 +1361,7 @@ static const diag_glyph_t hdmi_lite_font[] = {
     {'8', {0x36,0x49,0x49,0x49,0x36}}, {'9', {0x06,0x49,0x49,0x29,0x1E}},
     {'B', {0x7F,0x49,0x49,0x49,0x36}}, {'C', {0x3E,0x41,0x41,0x41,0x22}},
     {'E', {0x7F,0x49,0x49,0x49,0x41}}, {'F', {0x7F,0x09,0x09,0x09,0x01}},
+    {'H', {0x7F,0x08,0x08,0x08,0x7F}}, {'K', {0x7F,0x08,0x14,0x22,0x41}},
     {'L', {0x7F,0x40,0x40,0x40,0x40}}, {'M', {0x7F,0x02,0x0C,0x02,0x7F}},
     {'N', {0x7F,0x04,0x08,0x10,0x7F}}, {'P', {0x7F,0x09,0x09,0x09,0x06}},
     {'R', {0x7F,0x09,0x19,0x29,0x46}}, {'S', {0x46,0x49,0x49,0x49,0x31}},
@@ -1394,11 +1395,26 @@ static void hdmi_lite_update_diag_rows(void) {
              (unsigned long)hdmi_diag_i_error_count,
              (unsigned long)hdmi_diag_checkpoint);
     hdmi_lite_draw_text(0, 0, line);
+#if defined(USB_SUPPORT) && USB_SUPPORT
+    // USB keyboard bring-up: device mounts / HID interfaces / kbd reports.
+    // PL stays on as the audio heartbeat.
+    {
+        extern volatile uint32_t hdmi_diag_usb_mount_count;
+        extern volatile uint32_t hdmi_diag_hid_mount_count;
+        extern volatile uint32_t hdmi_diag_kbd_report_count;
+        snprintf(line, sizeof line, "KB M %lu H %lu R %lu PL %lu",
+                 (unsigned long)hdmi_diag_usb_mount_count,
+                 (unsigned long)hdmi_diag_hid_mount_count,
+                 (unsigned long)hdmi_diag_kbd_report_count,
+                 (unsigned long)I_PicoSoundPulledCount());
+    }
+#else
     snprintf(line, sizeof line, "MX %lu PL %lu FE %lu FL %lu",
              (unsigned long)I_PicoSoundMixedCount(),
              (unsigned long)I_PicoSoundPulledCount(),
              (unsigned long)hdmi_lite_fifo_empty_events,
              (unsigned long)hdmi_lite_fifo_min_level);
+#endif
     hdmi_lite_draw_text(0, 8, line);
     snprintf(line, sizeof line, "PB %lu CN %lu RY %d FR %d ST %lu",
              (unsigned long)hdmi_diag_pd_publish_count,

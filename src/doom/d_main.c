@@ -23,6 +23,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -82,6 +83,10 @@
 #include "d_main.h"
 #if PICO_BUILD
 #include "i_picosound.h"
+#if PICO_ON_DEVICE
+#include "pico/platform/sections.h"
+#include "pico/time.h"
+#endif
 #if USB_SUPPORT
 #include "tusb.h"
 #endif
@@ -107,6 +112,116 @@ static void PicoFreezeForHdmiDiag(int point)
             __asm volatile ("nop");
         }
     }
+}
+
+#ifndef PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD
+#define PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD 0
+#endif
+
+#ifndef PICODOOM_IDLE_XIP_LOAD_GAP
+#define PICODOOM_IDLE_XIP_LOAD_GAP 0
+#endif
+
+#if PICO_ON_DEVICE && PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 1
+static void __attribute__((noreturn, noinline, section(".scratch_y.idle_load"))) PicoIdleAfterFirstDisplayLoad(void)
+{
+    uint32_t a = 0x13579bdfu;
+    uint32_t b = 0x2468ace0u;
+    uint32_t c = 0x9e3779b9u;
+
+    for (;;)
+    {
+        a += b;
+        b ^= c;
+        c += (a >> 7) | (a << 25);
+        __asm volatile ("" : "+r" (a), "+r" (b), "+r" (c) :: "cc");
+    }
+}
+#endif
+
+#if PICO_ON_DEVICE && PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 2
+extern uint8_t frame_buffer[2][SCREENWIDTH * MAIN_VIEWHEIGHT];
+
+static void __attribute__((noreturn, noinline, section(".scratch_y.idle_load"))) PicoIdleAfterFirstDisplayLoad(void)
+{
+    uint32_t seed = 0x31415926u;
+    uint32_t *ram_words = (uint32_t *)frame_buffer;
+    const uint32_t ram_word_count = sizeof(frame_buffer) / sizeof(uint32_t);
+
+    for (;;)
+    {
+        for (uint32_t i = 0; i < ram_word_count; i++)
+        {
+            seed = seed * 1664525u + 1013904223u;
+            ram_words[i] ^= seed + i;
+        }
+        __asm volatile ("" : "+r" (seed) :: "memory", "cc");
+    }
+}
+#endif
+
+#if PICO_ON_DEVICE && (PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 3 || PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 4)
+static volatile uint32_t pico_idle_flash_anchor_sink;
+#endif
+
+#if PICO_ON_DEVICE && PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 3
+static void __attribute__((noreturn, noinline, section(".scratch_y.idle_load"))) PicoIdleAfterFirstDisplayLoad(void)
+{
+    uint32_t seed = 0x27182818u;
+    const volatile uint32_t *flash_words = (const volatile uint32_t *)TINY_WAD_ADDR;
+
+    for (;;)
+    {
+        for (uint32_t i = 0; i < 16384; i++)
+        {
+            seed ^= flash_words[(i + seed) & 16383u] + i;
+            seed = (seed << 5) | (seed >> 27);
+#if PICODOOM_IDLE_XIP_LOAD_GAP
+            for (uint32_t gap = 0; gap < PICODOOM_IDLE_XIP_LOAD_GAP; gap++)
+            {
+                seed = seed * 1664525u + 1013904223u;
+                __asm volatile ("" : "+r" (seed) :: "cc");
+            }
+#endif
+        }
+        __asm volatile ("" : "+r" (seed) :: "memory", "cc");
+    }
+}
+#endif
+
+static void __attribute__((noreturn)) PicoIdleQuietServiceLoop(void)
+{
+    for (;;)
+    {
+        I_UpdateSound();
+#if USB_SUPPORT
+        tuh_task();
+#endif
+    }
+}
+
+static void __attribute__((noreturn)) PicoIdleAfterFirstDisplayLoop(void)
+{
+#if PICO_ON_DEVICE && PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD
+#if PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 2 || PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 3 || PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 4
+    const uint32_t settle_start_us = time_us_32();
+    while ((uint32_t)(time_us_32() - settle_start_us) < 500000u)
+    {
+        I_UpdateSound();
+#if USB_SUPPORT
+        tuh_task();
+#endif
+    }
+#endif
+#if PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD == 4
+    pico_idle_flash_anchor_sink ^= ((const volatile uint32_t *)TINY_WAD_ADDR)[settle_start_us & 16383u];
+    PicoIdleQuietServiceLoop();
+#else
+    PicoIdleAfterFirstDisplayLoad();
+#endif
+#else
+    PicoIdleQuietServiceLoop();
+#endif
 }
 #endif
 
@@ -389,13 +504,7 @@ boolean D_Display (void)
     if (gamestate == GS_LEVEL && !pico_idle_after_first_display)
     {
         pico_idle_after_first_display = true;
-        for (;;)
-        {
-            I_UpdateSound();
-#if USB_SUPPORT
-            tuh_task();
-#endif
-        }
+        PicoIdleAfterFirstDisplayLoop();
     }
 #endif
 #endif

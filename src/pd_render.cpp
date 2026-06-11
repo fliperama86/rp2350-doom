@@ -94,6 +94,10 @@ statsomizer patch_decoder_size("patch decoder size");
 #define PICODOOM_FRAME_CAP_FPS 0
 #endif
 
+#ifndef PICODOOM_WAIT_AFTER_FRAME_PUBLISH
+#define PICODOOM_WAIT_AFTER_FRAME_PUBLISH 0
+#endif
+
 extern "C" {
 #include "doomtype.h"
 #include "doom/r_local.h"
@@ -2690,6 +2694,7 @@ static void uh_oh_discard_columns(int render_col_limit) {
 void pd_end_frame(int wipe_start) {
     DEBUG_PINS_SET(start_end, 2);
     hdmi_diag_pd_endframe_count++;
+    hdmi_fifo_probe_report();
     static bool publish_first_frame_done;
     bool suppress_frame_publish = false;
 #if PICO_DOOM && PICODOOM_PUBLISH_FIRST_FRAME_ONLY
@@ -3080,6 +3085,11 @@ void pd_end_frame(int wipe_start) {
         sem_release(&render_frame_ready);
 #if PICO_DOOM && PICODOOM_PUBLISH_FIRST_FRAME_ONLY
         publish_first_frame_done = true;
+#endif
+#if PICO_ON_DEVICE && PICODOOM_WAIT_AFTER_FRAME_PUBLISH
+        while (!sem_available(&display_frame_freed)) {
+            I_UpdateSound();
+        }
 #endif
         PicoFreezeForHdmiDiag(11);
     }

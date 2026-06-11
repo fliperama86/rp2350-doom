@@ -49,3 +49,217 @@ Core 0 handles all Doom rendering single-threaded. The game will be slower witho
 - If SRAM read contention is confirmed, try pre-rendering scanlines on Core 0 into a dedicated line buffer that the ISR only needs to memcpy
 - Consider 240p mode (`VIDEO_MODE_320x240`) to double the per-scanline time budget
 - Re-enable audio (HDMI data islands) once video is stable
+
+## Resume Notes (2026-05-25)
+
+### Current Git State
+- Parent repo last committed baseline: `48f086c0 Stabilize HDMI scanout with RGB565 frame handoff`.
+- Nested `pico_hdmi` last committed baseline: `ed25bf8 Add prepared scanline callback path`.
+- There are intentional uncommitted diagnostics in both repos.
+- Parent repo currently has modified: `flash.sh`, `src/doom/d_main.c`, `src/i_main.c`, `src/pd_render.cpp`, `src/pico/CMakeLists.txt`, `src/pico/i_video.c`, `src/picodoom.h`.
+- Nested `pico_hdmi` currently has modified: `CMakeLists.txt`, `include/pico_hdmi/video_output.h`, `src/video_output.c`, `src/video_output_rt.c`.
+- Do not delete or overwrite `pico_hdmi/`; it is a nested checkout and is intentionally untracked from the parent repo.
+
+### Flashing
+- Doom UF2s advertise `WHX at 0x10042000` but do not contain `doom1.whx`.
+- If the WHX is already present and the UF2 binary end is below `0x10042000`, this is enough:
+  ```sh
+  pi flash build-name/src/doom_tiny_usb.uf2
+  ```
+- If in doubt, or after flash erase/recovery, use the patched script:
+  ```sh
+  ./flash.sh build-name/src/doom_tiny_usb.uf2
+  ```
+  It loads both the UF2 and `doom1.whx` at `0x10042000`.
+- Always verify the UF2 before using `pi flash`:
+  ```sh
+  picotool info -a build-name/src/doom_tiny_usb.uf2 | head -55
+  ```
+
+### Important Build Options Added
+- `PICODOOM_HDMI_LINE_RING`
+- `PICODOOM_HDMI_LINE_RING_DIRECT`
+- `PICODOOM_HDMI_LINE_RING_SIZE`
+- `PICODOOM_HDMI_LINE_RING_PREPARE`
+- `PICODOOM_HDMI_LINE_RING_VBLANK_ONLY`
+- `PICODOOM_HDMI_SOLID_POINTER_TEST`
+- `PICODOOM_WAIT_AFTER_FRAME_PUBLISH`
+- `PICODOOM_IDLE_AFTER_FIRST_DISPLAY`
+- `PICODOOM_IDLE_AFTER_FIRST_DISPLAY_LOAD`
+- `PICODOOM_SYS_CLOCK_KHZ`
+- `PICODOOM_HDMI_HSTX_CLK_DIV`
+
+### Latest Confirmed Observations
+- 480p output is 640x480 timing with Doom's 320x200 content scaled in software.
+- Current pixel clock setup remains:
+  - `PICODOOM_SYS_CLOCK_KHZ=252000`
+  - `PICODOOM_HDMI_HSTX_CLK_DIV=2`
+  - 25.2 MHz effective pixel clock
+- Full UF2 + WHX flash of `build-min/src/doom_tiny_usb.uf2` gives the actual game image, HUD placed correctly, but horizontal line artifacts remain and sync can drop after minutes.
+- Static first-frame tests with Core 0 idled are clean and stable. This confirms the game frame data and basic scanout can be correct when Core 0 is quiet.
+- Solid scanout while Doom runs live is stable:
+  - `build-solid-live-current`: solid blue, sync holds.
+  - `build-solid-pointer-live`: solid blue through the pico_hdmi pointer callback, sync holds.
+- Full RGB565 prepared-frame memory is suspicious:
+  - `build-prepared-solid-pointer-wait`: solid blue through pointer path, with RGB565 frame allocated/built once. User saw solid blue but "glitches quite a bit".
+  - BSS comparison:
+    - `build-solid-pointer-live`: `bss=293424`
+    - `build-prepared-solid-pointer-wait`: `bss=421484`
+    - `build-min`: `bss=421484`
+  - The 128 KB `hdmi_rgb565_frame` pushes the zone start much higher and appears to make the live renderer less stable even when scanout reads only a solid line.
+- Line-ring behavior:
+  - `build-line-ring8-idlefirst-activeprep`: Core 0 idles after first frame, continuous 8-line ring prep. Observed `blue -> game frame -> holds sync`.
+  - `build-line-ring8-wait-publish-first`: Core 0 waits for first RGB565 build, then resumes Doom while display remains first published frame. Observed `blue -> game frame -> sync drops`.
+  - `build-line-ring8-wait-noprep`: same RGB565 frame path but ring prep disabled. Observed `blue -> magenta -> sync drops`.
+  - `build-direct-ring8-wait-publish-first`: no full RGB565 frame, direct line-ring prep from Doom's indexed framebuffer. Observed `solid blue -> game -> sync drops`.
+- Last flashed build before stopping:
+  - `build-direct-ring8-wait-publish-first/src/doom_tiny_usb.uf2`
+  - Observed: `solid blue -> game -> sync drops`.
+
+### Current Interpretation
+The failure is no longer a simple "pico_hdmi pointer callback is bad" issue:
+- Solid pointer callback is stable under live Doom.
+- Core 0 live Doom rendering by itself is stable when scanout is solid.
+- Game-frame scanout is stable when Core 0 is idled.
+
+The failures appear to come from two related pressure points:
+- The full 128 KB RGB565 prepared frame reduces SRAM/zone headroom enough to produce glitches or drops under live rendering.
+- Direct line-ring preparation avoids that 128 KB buffer, but active per-line preparation still competes with live Doom enough to drop sync.
+
+The most useful refinement is:
+**Core 0 render + solid pointer scanout is okay; Core 0 render + live game-line preparation/scanout is not okay yet.**
+
+### Recommended Next Experiments
+1. Build a no-prep direct-ring control:
+   - `PICODOOM_HDMI_PREPARED_SCANLINES=0`
+   - `PICODOOM_HDMI_LINE_RING=1`
+   - `PICODOOM_HDMI_LINE_RING_DIRECT=1`
+   - `PICODOOM_HDMI_LINE_RING_PREPARE=0`
+   - `PICODOOM_PUBLISH_FIRST_FRAME_ONLY=1`
+   - `PICODOOM_WAIT_AFTER_FRAME_PUBLISH=1`
+   Expected screen is mostly magenta. The question is only whether sync holds. If it holds, direct ring prep is the active contention source. If it drops, the direct-ring pointer state/buffers are still too much.
+2. If direct-ring no-prep holds, serialize direct-ring preparation with Core 0 rendering:
+   - Stop Core 0 after a publish.
+   - Let Core 1 prepare a bounded amount of scanout state.
+   - Resume Core 0 only after that work is complete.
+   This may reduce FPS but should test whether strict handoff can make real image scanout stable.
+3. Revisit 240p or hardware-assisted horizontal repeat:
+   - The current 480p path pays for 320->640 expansion in software.
+   - A real fix likely needs to avoid active per-line software expansion while Core 0 is rendering.
+   - Options worth exploring: updated `pico_hdmi` 240p, HSTX command-expander tricks, or a DMA/control-list approach that repeats pixels without a 640-wide software line.
+4. Keep RGB565 full-frame builds as diagnostics, not the main direction, unless a large RAM/zone re-layout is done. The full frame costs 128 KB and has correlated with instability.
+
+### Useful Known Builds
+- Stable solid callback while Doom runs:
+  `build-solid-live-current/src/doom_tiny_usb.uf2`
+- Stable solid pointer callback while Doom runs:
+  `build-solid-pointer-live/src/doom_tiny_usb.uf2`
+- Stable static game frame when Core 0 idles:
+  `build-line-ring8-idlefirst-activeprep/src/doom_tiny_usb.uf2`
+- Current actual game baseline with artifacts:
+  `build-min/src/doom_tiny_usb.uf2`
+- Last failed direct-ring attempt:
+  `build-direct-ring8-wait-publish-first/src/doom_tiny_usb.uf2`
+
+### Rebuild Template
+```sh
+cmake -E rm -rf build-name
+cmake -S . -B build-name -G Ninja \
+  -DCMAKE_BUILD_TYPE=MinSizeRel \
+  -DPICO_SDK_PATH=/Users/dudu/pico-sdk \
+  -DPICO_EXTRAS_PATH=/Users/dudu/pico-extras \
+  -DPICO_BOARD=pico2 \
+  -DPICO_PLATFORM=rp2350-arm-s \
+  -DPICO_STDIO_USB=OFF \
+  -DPICO_STDIO_UART=ON \
+  -DPICODOOM_HDMI_DIAG_STAGE=3 \
+  -DPICODOOM_HDMI_DVI_MODE=1 \
+  -DPICODOOM_BOOT_TO_E1M1=1 \
+  -DPICODOOM_SKIP_WIPES=1 \
+  -DPICODOOM_SYS_CLOCK_KHZ=252000 \
+  -DPICODOOM_HDMI_HSTX_CLK_DIV=2 \
+  -DPICODOOM_RENDER_THROTTLE_US=20
+cmake --build build-name --target doom_tiny_usb -j
+```
+
+## Session Findings (2026-05-26): HSTX/memory root-cause analysis + FIFO probe
+
+### What the failure is (refined)
+- 320 words/line in a ~25 us active line is trivial *bandwidth* (~12 MB/s). The sync drops are **latency/jitter**: the scanout DMA stalls behind Core 0 on a shared SRAM bank, the HSTX FIFO drains, TMDS emits garbage for a beat, and the sink loses PLL lock.
+- The differentiator across all prior builds is precise: **scanout that reads frame-derived memory drops sync; scanout of a constant does not.** Static game frame (Core 0 idle) is stable; solid scanout (Core 0 live) is stable; game frame + Core 0 live is not.
+- `BUS_PRIORITY` DMA_R is **already set** in two places (`i_video.c:~1283`, `pico_hdmi/src/video_output_rt.c:742`) and it is **not sufficient** — priority resolves per-cycle arbitration but the DMA still stalls behind an in-flight Core 0 transaction on the same bank.
+
+### HSTX hardware doubling: already done, cannot be improved
+- `pico_hdmi` runs the command expander in TMDS mode with `EXPAND_SHIFT.ENC_N_SHIFTS=2, ENC_SHIFT=16` (`video_output.c:550`). One FIFO word -> two output pixels.
+- `hdmi_expand_native_scanline()` (480p branch, `i_video.c`) writes `out[i] = px | (px<<16)` — 320 words, each pixel duplicated in both halves. So the **2x horizontal repeat is already done in hardware**; the buffer just carries identical halves.
+- Setting `ENC_SHIFT=0` would be functionally equivalent (high 16 bits become don't-care) with **no memory/bandwidth/latency win**. The expander rotates by a uniform `ENC_SHIFT` per push, so it cannot turn 160 packed-native words into a correct 640 line; two 16-bit pixels can't pack 4-to-a-word. **2x scale of 16bpp on HSTX is fixed at 320 words/line.** Do not chase HSTX expander reconfiguration for this.
+
+### RP2350 SRAM map (datasheet ch04) + the shortptr constraint
+- Banks 0-3 are 4-way word-striped over `0x20000000-0x2003FFFF`; banks 4-7 over `0x20040000-0x2007FFFF`. Each bank has its own AHB arbiter, so accesses to different banks run in parallel. ch14 erratum prescribes splitting DMA vs CPU buffers across these two 256 KB blocks. No non-striped mirror on RP2350.
+- The Doom zone uses **shortptrs**: `SHORTPTR_BASE=0x20030000` on RP2350 (`doomtype.h`), window `[0x20030000, 0x20070000)`. `I_ZoneBase` returns `__end__` with size `0x20070000 - __end__`, so the zone is hard-confined to that window (straddles the bank boundary at `0x20040000`).
+- From `build-min/.../doom_tiny_usb.elf.map`: `__data_start__=0x20000110`, `__end__=0x200681a4` (~426 KB static data, spanning all 8 banks), `frame_buffer` at `0x20025410` (banks 0-3). Zone is `0x200681a4..0x20070000` (~32 KB). **Only `0x20070000-0x2007FFFF` (64 KB) is free** — the lone RAM region untouched by static data or zone.
+- Implication: perfect "Core 0 only touches banks 0-3, DMA only banks 4-7" isolation is impossible (working set is 458 KB). The achievable move is to pin the scanout ring into the free top 64 KB (the quietest region) + keep prep vblank-only. That is a *partial*, measurement-gated experiment, not a guaranteed fix — which is why the FIFO probe comes first.
+
+### FIFO probe (added this session)
+- New flag `PICODOOM_HDMI_FIFO_PROBE` (`src/pico/CMakeLists.txt`). When 1: the ISR-context scanline callbacks sample `hstx_fifo_hw->stat` per active line (EMPTY bit 9 = drained = underflow; LEVEL bits 7:0 = margin); `hdmi_fifo_probe_report()` prints `empty=/min_level=/samples=` over UART once per ~60 frames from `pd_end_frame()` (Core 0).
+- Covers all three scanout paths (line-ring pointer cb, prepared-RGB565 cb, direct scanline cb). No `pico_hdmi` edit. Verified build: `build-fifoprobe/src/doom_tiny_usb.uf2`, ends `0x1003b054` (safe below WHX `0x10042000`).
+- **Next:** flash `build-fifoprobe` and read the UART. `empty>0` during the game image confirms FIFO underflow as the drop cause; then the top-64KB ring relocation can be tried and measured (empty should fall toward 0). If `empty==0` while sync still drops, the cause is elsewhere (e.g. HSTX clock/command-list, not scanout starvation) and the bank work is moot.
+- Build/probe command: add `-DPICODOOM_HDMI_LINE_RING=1 -DPICODOOM_HDMI_LINE_RING_DIRECT=1 -DPICODOOM_HDMI_FIFO_PROBE=1` to the rebuild template (UART stdio must stay on).
+
+## Session (2026-06-10): command-list scanout backend (borrowed from fruitjam-doom)
+
+### What was added
+`PICODOOM_HDMI_CMDLIST=1` — an alternate HSTX scanout backend in `src/pico/hstx_cmdlist.c`,
+adapted from the CircuitPython picodvi RP2350 driver as used by
+`~/Projects/references/fruitjam-doom` (`Framebuffer_RP2350.c`, MIT). Architecture:
+
+- The **entire 640x480 frame is one precomputed DMA command list**: a command
+  channel writes the pixel channel's al3 registers per slot (write-ring,
+  re-triggered by chain), the pixel channel feeds the HSTX FIFO paced by
+  `DREQ_HSTX`. **No per-scanline ISR exists** — the only interrupt is one per
+  frame (null-trigger terminator) that rewinds the command list. This removes
+  the per-line CPU deadline entirely, i.e. the diagnosed latency/jitter failure
+  mode of the pico_hdmi path.
+- Scanout reads the **native 320x200 RGB565 frame (`hdmi_rgb565_frame`)
+  directly**: 16-bit DMA transfers are bus-replicated to `px|(px<<16)` and the
+  HSTX expander (same `ENC_N_SHIFTS=2/ENC_SHIFT=16` + RGB565 TMDS rotations as
+  pico_hdmi) doubles horizontally; vertical 2x + letterbox is baked into the
+  command list as repeated/black row pointers. No 640-wide software expansion
+  anywhere.
+- The command list + black line (~17 KB) live at `0x20070000` — the free top
+  64 KB of SRAM (banks 4-7) identified earlier as the quietest region.
+- Core 1: starts the scanout, then free-runs `new_frame_stuff()` once per
+  scanout frame (frame handoff + full RGB565 rebuild). A slow rebuild can
+  tear; it cannot drop sync.
+- Constraints (compile-time enforced): DVI only (no data islands → no HDMI
+  audio), `DIAG_STAGE>=3`, 480p, no line ring. pico_hdmi init/runtime is
+  skipped entirely (its DMA channels/IRQ are never claimed/enabled).
+
+### Build
+`build-cmdlist/` = build-min flags + `-DPICODOOM_HDMI_CMDLIST=1`
+(PREPARED_SCANLINES=1, DIAG_STAGE=3, DVI=1, BOOT_TO_E1M1=1, SKIP_WIPES=1,
+THROTTLE=20). UF2 end `0x10039bd0` (< WHX `0x10042000`). Map verified: nothing
+at `0x2007xxxx`; `__end__=0x2005d858` (~43 KB MORE zone headroom than
+build-min's `0x200681a4`, since the line-ring/expanded-line buffers drop out).
+
+### A/B RESULT (2026-06-10): ROOT CAUSE CONFIRMED
+**build-cmdlist runs smoothly under live rendering** (user-confirmed on
+hardware, normal boot with title/demo loop, no forced E1M1). The pico_hdmi
+per-scanline-ISR deadline was the sync-drop cause — NOT bus bandwidth, NOT
+per-beat SRAM arbitration. The command-list scanout (no per-line CPU
+involvement) holds sync where every pico_hdmi variant dropped.
+
+Consequences:
+- **Command-list scanout is the way forward.** The pico_hdmi ISR path and its
+  diagnostic ladder (line ring, prepared scanlines, FIFO probe, bank
+  isolation) are superseded for video.
+- **Core 1 render assist is plausibly re-enableable** (`USE_CORE1_*` in
+  `pd_render.cpp`): no ISR shares Core 1 anymore; its only duty is the
+  once-per-frame `new_frame_stuff()` rebuild.
+- **Open problem: audio.** cmdlist is DVI-only. Options: graft data-island
+  insertion into the command list (audio packets land in blanking-line
+  commands rewritten per frame), or follow fruitjam-doom and use an external
+  I2S DAC.
+- Next polish candidates: full-screen stretch (row*200/480, drop letterbox),
+  tear avoidance (double-buffer the RGB565 frame or rebuild paced to the
+  per-frame IRQ phase).

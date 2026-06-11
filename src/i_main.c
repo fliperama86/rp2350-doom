@@ -47,6 +47,11 @@
 #if PICO_RP2350
 #include "hardware/structs/qmi.h"
 #endif
+
+#ifndef PICODOOM_SYS_CLOCK_KHZ
+#define PICODOOM_SYS_CLOCK_KHZ 252000
+#endif
+
 //
 // D_DoomMain()
 // Not a globally visible function, just included for source reference,
@@ -80,7 +85,7 @@ int main(int argc, char **argv)
     vreg_set_voltage(VREG_VOLTAGE_1_30);
     busy_wait_us(1000);
     // todo pause? is this the cause of the cold start issue?
-    set_sys_clock_khz(252000, true);
+    set_sys_clock_khz(PICODOOM_SYS_CLOCK_KHZ, true);
 #if !USE_PICO_NET
     // debug ?
 //    gpio_debug_pins_init();

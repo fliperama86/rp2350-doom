@@ -55,6 +55,13 @@
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
 #include "hardware/structs/busctrl.h"
+
+#ifndef PICODOOM_HDMI_FIFO_PROBE
+#define PICODOOM_HDMI_FIFO_PROBE 0
+#endif
+#if PICODOOM_HDMI_FIFO_PROBE
+#include "hardware/structs/hstx_fifo.h"
+#endif
 #endif
 
 // RGB565 pixel macro (replaces PICO_SCANVIDEO_PIXEL_FROM_RGB8)
@@ -90,11 +97,71 @@ volatile uint8_t interp_in_use;
 #define PICODOOM_HDMI_PREPARED_SCANLINES 0
 #endif
 
-#if PICODOOM_HDMI_PREPARED_SCANLINES && PICODOOM_HDMI_DIAG_STAGE >= 3
+#ifndef PICODOOM_HDMI_FREEZE_RGB565_FRAME
+#define PICODOOM_HDMI_FREEZE_RGB565_FRAME 0
+#endif
+
+#ifndef PICODOOM_HDMI_NATIVE_POINTER_TEST
+#define PICODOOM_HDMI_NATIVE_POINTER_TEST 0
+#endif
+
+#ifndef PICODOOM_HDMI_SOLID_POINTER_TEST
+#define PICODOOM_HDMI_SOLID_POINTER_TEST 0
+#endif
+
+#ifndef PICODOOM_HDMI_LINE_RING
+#define PICODOOM_HDMI_LINE_RING 0
+#endif
+
+#ifndef PICODOOM_HDMI_LINE_RING_DIRECT
+#define PICODOOM_HDMI_LINE_RING_DIRECT 0
+#endif
+
+#ifndef PICODOOM_HDMI_LINE_RING_SIZE
+#define PICODOOM_HDMI_LINE_RING_SIZE 32
+#endif
+
+#ifndef PICODOOM_HDMI_LINE_RING_PREPARE
+#define PICODOOM_HDMI_LINE_RING_PREPARE 1
+#endif
+
+#ifndef PICODOOM_HDMI_LINE_RING_VBLANK_ONLY
+#define PICODOOM_HDMI_LINE_RING_VBLANK_ONLY 1
+#endif
+
+#ifndef PICODOOM_HDMI_CMDLIST
+#define PICODOOM_HDMI_CMDLIST 0
+#endif
+
+#if PICODOOM_HDMI_CMDLIST
+// Command-list scanout: per-frame DMA command list, no per-line ISR, no
+// pico_hdmi runtime. Scans the native 320x200 RGB565 frame directly.
+#if PICODOOM_HDMI_240P
+#error PICODOOM_HDMI_CMDLIST requires the 640x480 mode (PICODOOM_HDMI_240P=0)
+#endif
+#if !PICODOOM_HDMI_DVI_MODE
+#error PICODOOM_HDMI_CMDLIST is DVI-only (no data islands); set PICODOOM_HDMI_DVI_MODE=1
+#endif
+#if PICODOOM_HDMI_DIAG_STAGE < 3
+#error PICODOOM_HDMI_CMDLIST requires PICODOOM_HDMI_DIAG_STAGE=3
+#endif
+#if PICODOOM_HDMI_LINE_RING
+#error PICODOOM_HDMI_CMDLIST replaces the line ring; set PICODOOM_HDMI_LINE_RING=0
+#endif
+#include "hstx_cmdlist.h"
+#endif
+
+#if PICODOOM_HDMI_CMDLIST
+#define PICODOOM_HDMI_USE_RGB565_FRAME 1
+#elif PICODOOM_HDMI_PREPARED_SCANLINES && PICODOOM_HDMI_DIAG_STAGE >= 3
 #define PICODOOM_HDMI_USE_RGB565_FRAME 1
 #else
 #define PICODOOM_HDMI_USE_RGB565_FRAME 0
 #endif
+
+#define PICODOOM_HDMI_LINE_RING_ACTIVE \
+    (PICODOOM_HDMI_LINE_RING && !PICODOOM_HDMI_240P && \
+     (PICODOOM_HDMI_USE_RGB565_FRAME || PICODOOM_HDMI_LINE_RING_DIRECT))
 
 #if PICODOOM_HDMI_USE_RGB565_FRAME
 #define HDMI_SCANLINE_RENDER_ATTR
@@ -760,10 +827,122 @@ static uint32_t __not_in_flash("solid_line") solid_line[HDMI_H_ACTIVE / 2];
 static bool hdmi_solid_scanout_initialized;
 static bool hdmi_scanline_buffer_is_black;
 
+#if PICODOOM_HDMI_FIFO_PROBE
+// HSTX FIFO starvation probe. Sampled in DMA-ISR-context scanline callbacks:
+// stat bit 9 (EMPTY) set during active video means the FIFO drained -- the
+// underflow that drops sync; bits 7:0 (LEVEL) are the remaining margin.
+// Because a sync drop kills the display, the result is also rendered ON SCREEN:
+// the letterbox bars are green while clean and latch sticky-red the first time
+// an underflow is seen during real game content. hdmi_fifo_probe_report() (Core
+// 0, once/sec) additionally prints over UART if one is attached.
+static uint32_t __not_in_flash("fifo_health") hdmi_fifo_health_line[HDMI_H_ACTIVE / 2];
+static volatile bool hdmi_fifo_health_red;
+static bool hdmi_fifo_health_inited;
+static volatile uint32_t hdmi_fifo_probe_samples;
+static volatile uint32_t hdmi_fifo_probe_empty_events;
+static volatile uint32_t hdmi_fifo_probe_min_level = 0xffffffffu;
+
+static void __not_in_flash_func(hdmi_fifo_health_fill)(uint16_t color) {
+    uint32_t packed = color | ((uint32_t)color << 16);
+    for (int i = 0; i < HDMI_H_ACTIVE / 2; i++) {
+        hdmi_fifo_health_line[i] = packed;
+    }
+}
+
+static void __not_in_flash_func(hdmi_fifo_probe_sample)(void) {
+    if (!hdmi_fifo_health_inited) {
+        hdmi_fifo_health_fill(0x07e0); // green: running, no underflow yet
+        hdmi_fifo_health_inited = true;
+    }
+    uint32_t stat = hstx_fifo_hw->stat;
+    uint32_t level = stat & 0xffu;
+    if (level < hdmi_fifo_probe_min_level) {
+        hdmi_fifo_probe_min_level = level;
+    }
+    hdmi_fifo_probe_samples++;
+    if (stat & (1u << 9)) {            // EMPTY: FIFO drained on this active line
+        hdmi_fifo_probe_empty_events++;
+        // Latch red only once real game content is up, to ignore startup/resync
+        // transients during the NONE/title phase.
+        if (!hdmi_fifo_health_red && display_video_type != VIDEO_TYPE_NONE) {
+            hdmi_fifo_health_red = true;
+            hdmi_fifo_health_fill(0xf800); // red, sticky
+        }
+    }
+}
+
+void hdmi_fifo_probe_report(void) {
+    static uint32_t frames;
+    if (++frames < 60) {               // roughly once per second at 60 fps
+        return;
+    }
+    frames = 0;
+    printf("HSTX FIFO probe: empty=%u min_level=%u samples=%u red=%u\n",
+           (unsigned)hdmi_fifo_probe_empty_events,
+           (unsigned)(hdmi_fifo_probe_min_level == 0xffffffffu ? 0u : hdmi_fifo_probe_min_level),
+           (unsigned)hdmi_fifo_probe_samples,
+           (unsigned)hdmi_fifo_health_red);
+    hdmi_fifo_probe_empty_events = 0;
+    hdmi_fifo_probe_min_level = 0xffffffffu;
+    hdmi_fifo_probe_samples = 0;
+}
+#else
+void hdmi_fifo_probe_report(void) {}
+#endif
+
 #if PICODOOM_HDMI_USE_RGB565_FRAME
 static uint32_t __aligned(4) hdmi_rgb565_frame[SCREENHEIGHT][SCREENWIDTH / 2];
 static volatile bool hdmi_rgb565_frame_ready;
+static bool hdmi_rgb565_frame_frozen;
 #endif
+
+#if PICODOOM_HDMI_LINE_RING_ACTIVE
+#if PICODOOM_HDMI_LINE_RING_SIZE < 8
+#error PICODOOM_HDMI_LINE_RING_SIZE must be at least 8
+#endif
+#define HDMI_RGB565_LINE_RING_LEAD (PICODOOM_HDMI_LINE_RING_SIZE - 4)
+
+typedef struct {
+    uint32_t pixels[HDMI_H_ACTIVE / 2];
+    volatile uint16_t epoch;
+    volatile uint16_t doom_line;
+    volatile uint8_t ready;
+} hdmi_rgb565_line_ring_entry_t;
+
+static hdmi_rgb565_line_ring_entry_t __aligned(4) hdmi_rgb565_line_ring[PICODOOM_HDMI_LINE_RING_SIZE];
+static uint32_t __aligned(4) hdmi_rgb565_line_ring_no_frame_line[HDMI_H_ACTIVE / 2];
+static uint32_t __aligned(4) hdmi_rgb565_line_ring_building_line[HDMI_H_ACTIVE / 2];
+static uint32_t __aligned(4) hdmi_rgb565_line_ring_missing_line[HDMI_H_ACTIVE / 2];
+static volatile uint16_t hdmi_rgb565_line_ring_epoch = 1;
+static volatile int16_t hdmi_rgb565_line_ring_scan_doom_line = -1;
+static volatile bool hdmi_rgb565_line_ring_restart_pending;
+static uint16_t hdmi_rgb565_line_ring_service_epoch;
+static int16_t hdmi_rgb565_line_ring_prepare_next;
+
+static inline void hdmi_rgb565_line_ring_bump_epoch(void) {
+    uint16_t next = hdmi_rgb565_line_ring_epoch + 1u;
+    if (!next) {
+        next = 1;
+    }
+    hdmi_rgb565_line_ring_epoch = next;
+    hdmi_rgb565_line_ring_scan_doom_line = -1;
+}
+
+static void hdmi_rgb565_line_ring_fill_diag_line(uint32_t *line, uint16_t color) {
+    const uint32_t packed = color | ((uint32_t)color << 16);
+    for (int i = 0; i < HDMI_H_ACTIVE / 2; i++) {
+        line[i] = packed;
+    }
+}
+#endif
+
+uint32_t hdmi_diag_rgb565_frame_ready(void) {
+#if PICODOOM_HDMI_USE_RGB565_FRAME
+    return hdmi_rgb565_frame_ready ? 1u : 0u;
+#else
+    return 0;
+#endif
+}
 
 static inline void fill_color_bars(uint32_t *line_buffer) {
     static const uint16_t bars[8] = {
@@ -910,8 +1089,109 @@ static inline void HDMI_SCANLINE_RENDER_ATTR hdmi_expand_native_scanline(uint32_
 #endif
 }
 
+#if PICODOOM_HDMI_LINE_RING_ACTIVE
+static void hdmi_rgb565_line_ring_prepare_one(int doom_line) {
+    hdmi_rgb565_line_ring_entry_t *entry =
+        &hdmi_rgb565_line_ring[(uint)doom_line % PICODOOM_HDMI_LINE_RING_SIZE];
+
+    entry->ready = 0;
+    __compiler_memory_barrier();
+#if PICODOOM_HDMI_USE_RGB565_FRAME
+    hdmi_expand_native_scanline(entry->pixels, hdmi_rgb565_frame[doom_line]);
+#else
+    hdmi_render_native_scanline(scanline_temp, doom_line);
+    hdmi_expand_native_scanline(entry->pixels, scanline_temp);
+#endif
+    entry->doom_line = (uint16_t)doom_line;
+    entry->epoch = hdmi_rgb565_line_ring_service_epoch;
+    __compiler_memory_barrier();
+    entry->ready = 1;
+}
+
+static void hdmi_rgb565_line_ring_service(void) {
+    if (display_video_type == VIDEO_TYPE_NONE) {
+        return;
+    }
+#if PICODOOM_HDMI_USE_RGB565_FRAME
+    if (!hdmi_rgb565_frame_ready) {
+        return;
+    }
+#endif
+
+    const uint16_t epoch = hdmi_rgb565_line_ring_epoch;
+    const int16_t scan_doom_line = hdmi_rgb565_line_ring_scan_doom_line;
+
+    if (hdmi_rgb565_line_ring_restart_pending || hdmi_rgb565_line_ring_service_epoch != epoch) {
+        hdmi_rgb565_line_ring_restart_pending = false;
+        hdmi_rgb565_line_ring_service_epoch = epoch;
+        hdmi_rgb565_line_ring_prepare_next = 0;
+    } else if (scan_doom_line >= 0 && hdmi_rgb565_line_ring_prepare_next < scan_doom_line) {
+        hdmi_rgb565_line_ring_prepare_next = scan_doom_line;
+    }
+
+    int16_t max_prepare = scan_doom_line < 0
+        ? HDMI_RGB565_LINE_RING_LEAD
+        : (int16_t)(scan_doom_line + HDMI_RGB565_LINE_RING_LEAD);
+    if (max_prepare >= SCREENHEIGHT) {
+        max_prepare = SCREENHEIGHT - 1;
+    }
+
+    for (int budget = 0; budget < 2 && hdmi_rgb565_line_ring_prepare_next <= max_prepare; budget++) {
+        hdmi_rgb565_line_ring_prepare_one(hdmi_rgb565_line_ring_prepare_next);
+        hdmi_rgb565_line_ring_prepare_next++;
+    }
+}
+
+static const uint32_t *__scratch_x("doom_scanline") hdmi_rgb565_line_ring_pointer_callback(uint32_t v_scanline, uint32_t active_line) {
+    (void)v_scanline;
+#if PICODOOM_HDMI_FIFO_PROBE
+    hdmi_fifo_probe_sample();
+#endif
+
+    if (active_line < LETTERBOX_TOP || active_line >= LETTERBOX_BOTTOM) {
+#if PICODOOM_HDMI_FIFO_PROBE
+        return hdmi_fifo_health_line; // green=clean, sticky-red once underflow seen
+#else
+        return solid_line;
+#endif
+    }
+
+    const int content_line = (int)active_line - LETTERBOX_TOP;
+    const int doom_line = content_line / 2;
+    if (doom_line < 0 || doom_line >= SCREENHEIGHT) {
+        return hdmi_rgb565_line_ring_missing_line;
+    }
+
+    if (display_video_type == VIDEO_TYPE_NONE) {
+        return hdmi_rgb565_line_ring_no_frame_line;
+    }
+
+#if PICODOOM_HDMI_USE_RGB565_FRAME
+    if (!hdmi_rgb565_frame_ready) {
+        return hdmi_rgb565_line_ring_building_line;
+    }
+#endif
+
+    hdmi_rgb565_line_ring_scan_doom_line = (int16_t)doom_line;
+
+    const uint16_t epoch = hdmi_rgb565_line_ring_epoch;
+    hdmi_rgb565_line_ring_entry_t *entry =
+        &hdmi_rgb565_line_ring[(uint)doom_line % PICODOOM_HDMI_LINE_RING_SIZE];
+    if (entry->ready && entry->epoch == epoch && entry->doom_line == (uint16_t)doom_line) {
+        return entry->pixels;
+    }
+
+    return hdmi_rgb565_line_ring_missing_line;
+}
+#endif
+
 #if PICODOOM_HDMI_USE_RGB565_FRAME
 static void hdmi_rgb565_build_display_frame(void) {
+#if PICODOOM_HDMI_FREEZE_RGB565_FRAME
+    if (hdmi_rgb565_frame_frozen) {
+        return;
+    }
+#endif
     hdmi_rgb565_frame_ready = false;
     __compiler_memory_barrier();
 
@@ -923,12 +1203,23 @@ static void hdmi_rgb565_build_display_frame(void) {
         hdmi_render_native_scanline(hdmi_rgb565_frame[doom_line], doom_line);
     }
 
+#if PICODOOM_HDMI_LINE_RING_ACTIVE
+    hdmi_rgb565_line_ring_bump_epoch();
+    hdmi_rgb565_line_ring_restart_pending = true;
+#endif
     __compiler_memory_barrier();
     hdmi_rgb565_frame_ready = true;
+#if PICODOOM_HDMI_FREEZE_RGB565_FRAME
+    hdmi_rgb565_frame_frozen = true;
+#endif
 }
 
+#if !PICODOOM_HDMI_CMDLIST
 static void __scratch_x("doom_scanline") hdmi_rgb565_scanline_callback(uint32_t v_scanline, uint32_t active_line, uint32_t *line_buffer) {
     (void)v_scanline;
+#if PICODOOM_HDMI_FIFO_PROBE
+    hdmi_fifo_probe_sample();
+#endif
 
 #if PICODOOM_FORCE_SOLID_SCANOUT && PICODOOM_SOLID_COLOR && PICODOOM_SOLID_COLOR != 0
     memcpy(line_buffer, solid_line, HDMI_H_ACTIVE * 2);
@@ -961,11 +1252,44 @@ static void __scratch_x("doom_scanline") hdmi_rgb565_scanline_callback(uint32_t 
     hdmi_expand_native_scanline(line_buffer, hdmi_rgb565_frame[doom_line]);
     hdmi_scanline_buffer_is_black = false;
 }
+
+#if PICODOOM_HDMI_NATIVE_POINTER_TEST && !PICODOOM_HDMI_240P
+static const uint32_t *__scratch_x("doom_scanline") hdmi_rgb565_native_pointer_callback(uint32_t v_scanline, uint32_t active_line) {
+    (void)v_scanline;
+
+    if (active_line < LETTERBOX_TOP || active_line >= LETTERBOX_BOTTOM ||
+        display_video_type == VIDEO_TYPE_NONE || !hdmi_rgb565_frame_ready) {
+        return solid_line;
+    }
+
+    int content_line = active_line - LETTERBOX_TOP;
+    int doom_line = content_line / 2;
+    if (doom_line < 0 || doom_line >= SCREENHEIGHT) {
+        return solid_line;
+    }
+
+    // Diagnostic only: HSTX still reads 640 pixels, so this intentionally
+    // scans two adjacent native 320px lines instead of doing 2x expansion.
+    return hdmi_rgb565_frame[doom_line];
+}
+#endif
+#endif // !PICODOOM_HDMI_CMDLIST
+#endif
+
+#if !PICODOOM_HDMI_CMDLIST
+static const uint32_t *__scratch_x("doom_scanline") hdmi_solid_pointer_callback(uint32_t v_scanline, uint32_t active_line) {
+    (void)v_scanline;
+    (void)active_line;
+    return solid_line;
+}
 #endif
 
 #if !PICODOOM_HDMI_USE_RGB565_FRAME
 static void __scratch_x("doom_scanline") hdmi_scanline_callback(uint32_t v_scanline, uint32_t active_line, uint32_t *line_buffer) {
     (void)v_scanline;
+#if PICODOOM_HDMI_FIFO_PROBE
+    hdmi_fifo_probe_sample();
+#endif
 
     if (PICODOOM_HDMI_DIAG_STAGE == 1) {
         fill_color_bars(line_buffer);
@@ -1034,9 +1358,14 @@ void hdmi_diag_service_video_handoff(void) {
     }
 }
 
+#if !PICODOOM_HDMI_CMDLIST
 static void hdmi_vsync_callback(void) {
     // VSYNC callback runs in DMA IRQ context; defer heavy frame work.
     hdmi_diag_vsync_count++;
+#if PICODOOM_HDMI_LINE_RING_ACTIVE
+    hdmi_rgb565_line_ring_scan_doom_line = -1;
+    hdmi_rgb565_line_ring_restart_pending = true;
+#endif
     hdmi_vsync_pending = true;
     if (++hdmi_blink_counter >= 30) {
         hdmi_blink_counter = 0;
@@ -1047,18 +1376,63 @@ static void hdmi_vsync_callback(void) {
 
 static void core1_background_task(void) {
     hdmi_diag_service_video_handoff();
+#if PICODOOM_HDMI_LINE_RING_ACTIVE && PICODOOM_HDMI_LINE_RING_PREPARE
+#if PICODOOM_HDMI_LINE_RING_VBLANK_ONLY
+    if (video_output_in_vertical_blanking()) {
+        hdmi_rgb565_line_ring_service();
+    }
+#else
+    hdmi_rgb565_line_ring_service();
+#endif
+#endif
 }
+#endif
 
 #pragma GCC pop_options
 
+#if PICODOOM_HDMI_CMDLIST
+static void core1() {
+    // Bus priority is (re)set inside hstx_cmdlist_scanout_start; with no
+    // per-line ISR the scanout DMA is the only real-time agent on this core.
+    hstx_cmdlist_scanout_start((const uint32_t *)hdmi_rgb565_frame, SCREENWIDTH / 2, SCREENHEIGHT);
+    sem_release(&core1_launch);
+    uint32_t last_frame = ~0u;
+    while (true) {
+        uint32_t frame = hstx_cmdlist_frame_number();
+        if (frame == last_frame) {
+            tight_loop_contents();
+            continue;
+        }
+        last_frame = frame;
+        hdmi_diag_vsync_count++;
+        if (++hdmi_blink_counter >= 30) {
+            hdmi_blink_counter = 0;
+            led_state = !led_state;
+            gpio_put(PICO_DEFAULT_LED_PIN, led_state);
+        }
+        // Frame handoff plus the full 320x200 RGB565 rebuild (in
+        // hdmi_rgb565_build_display_frame), once per scanout frame. Scanout
+        // never waits on this: a slow rebuild can tear, not drop sync.
+        new_frame_stuff();
+    }
+}
+#else
 static void core1() {
     // Prefer HSTX DMA over CPU bus traffic; video_output_core1_run() sets the
     // final DMA read/write priority again after DMA setup.
     busctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
     while (!(busctrl_hw->priority_ack)) tight_loop_contents();
 
-#if PICODOOM_HDMI_USE_RGB565_FRAME
+#if PICODOOM_HDMI_SOLID_POINTER_TEST
+    video_output_set_scanline_pointer_callback(hdmi_solid_pointer_callback);
+#elif PICODOOM_HDMI_LINE_RING_ACTIVE
+    video_output_set_scanline_pointer_callback(hdmi_rgb565_line_ring_pointer_callback);
+#elif PICODOOM_HDMI_USE_RGB565_FRAME
+#if PICODOOM_HDMI_NATIVE_POINTER_TEST && !PICODOOM_HDMI_240P
+    video_output_set_scanline_pointer_callback(hdmi_rgb565_native_pointer_callback);
+#else
     video_output_set_scanline_callback(hdmi_rgb565_scanline_callback);
+#endif
 #else
     video_output_set_scanline_callback(hdmi_scanline_callback);
 #endif
@@ -1067,6 +1441,7 @@ static void core1() {
     sem_release(&core1_launch);
     video_output_core1_run(); // does not return
 }
+#endif
 
 #if PICO_RP2350
 #include "hardware/structs/accessctrl.h"
@@ -1080,16 +1455,31 @@ void I_InitGraphics(void)
     hdmi_solid_scanout_initialized = false;
 #if PICODOOM_HDMI_USE_RGB565_FRAME
     hdmi_rgb565_frame_ready = false;
+    hdmi_rgb565_frame_frozen = false;
+#endif
+#if PICODOOM_HDMI_LINE_RING_ACTIVE
+    hdmi_rgb565_line_ring_epoch = 1;
+    hdmi_rgb565_line_ring_scan_doom_line = -1;
+    hdmi_rgb565_line_ring_service_epoch = 0;
+    hdmi_rgb565_line_ring_prepare_next = 0;
+    for (int i = 0; i < PICODOOM_HDMI_LINE_RING_SIZE; i++) {
+        hdmi_rgb565_line_ring[i].ready = 0;
+    }
+    hdmi_rgb565_line_ring_fill_diag_line(hdmi_rgb565_line_ring_no_frame_line, 0x001f);
+    hdmi_rgb565_line_ring_fill_diag_line(hdmi_rgb565_line_ring_building_line, 0xffe0);
+    hdmi_rgb565_line_ring_fill_diag_line(hdmi_rgb565_line_ring_missing_line, 0xf81f);
 #endif
     stbar = NULL;
     sem_init(&render_frame_ready, 0, 2);
     sem_init(&display_frame_freed, 1, 2);
     sem_init(&core1_launch, 0, 1);
     pd_init();
+#if !PICODOOM_HDMI_CMDLIST
     hstx_di_queue_init();
     // We output a 640x480 HDMI timing and scale 320x200 content in the scanline callback.
     video_output_init(HDMI_H_ACTIVE, HDMI_V_ACTIVE);
     video_output_set_dvi_mode(PICODOOM_HDMI_DVI_MODE != 0);
+#endif
     #if PICODOOM_SOLID_COLOR && (PICODOOM_SOLID_COLOR != 0)
     {
         const uint32_t solid_pixel = PICODOOM_SOLID_COLOR & 0xffffu;
@@ -1101,7 +1491,8 @@ void I_InitGraphics(void)
     #endif
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    printf("HDMI diag stage=%d dvi_mode=%d\n", PICODOOM_HDMI_DIAG_STAGE, PICODOOM_HDMI_DVI_MODE);
+    printf("HDMI diag stage=%d dvi_mode=%d cmdlist=%d\n", PICODOOM_HDMI_DIAG_STAGE,
+           PICODOOM_HDMI_DVI_MODE, PICODOOM_HDMI_CMDLIST);
     // Use a larger stack in main SRAM for Core 1.  The default SCRATCH_X
     // stack (0x4f8) is too small: pd_core1_loop()'s deep render call chain
     // plus the DMA ISR frame overflow it, corrupting HDMI output.

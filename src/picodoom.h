@@ -23,6 +23,7 @@ extern volatile uint8_t interp_in_use;
 void hdmi_diag_boot_marker_set(uint32_t value);
 uint32_t hdmi_diag_boot_marker_get(void);
 void hdmi_diag_service_video_handoff(void);
+uint32_t hdmi_diag_rgb565_frame_ready(void);
 void pd_init();
 void pd_core1_loop();
 void pd_begin_frame();
@@ -45,6 +46,9 @@ extern volatile uint32_t hdmi_diag_doomloop_count;
 extern volatile uint32_t hdmi_diag_pd_begin_count;
 extern volatile uint32_t hdmi_diag_pd_endframe_count;
 extern volatile uint32_t hdmi_diag_pd_publish_count;
+// HSTX FIFO starvation probe (no-op unless PICODOOM_HDMI_FIFO_PROBE=1). Called once
+// per frame on Core 0 to print accumulated per-scanline FIFO health over UART.
+void hdmi_fifo_probe_report(void);
 #ifdef __cplusplus
 }
 #endif

@@ -1641,10 +1641,11 @@ static void core1() {
 #if PICODOOM_HDMI_LITE
     video_output_set_scanline_pointer_callback(hdmi_lite_pointer_callback);
     video_output_set_native_pixel_mode(true);
-    // Pre-composed line ring in the free top 64 KB of SRAM (layout and
-    // overlap asserts in hdmi_lite_layout.h). 96 entries lead the beam by
-    // ~88 lines; the per-frame RGB565 rebuild additionally services the
-    // ring mid-loop so it can never fully stale out.
+    // Pre-composed line ring in the free top-of-SRAM region (layout and
+    // overlap asserts in hdmi_lite_layout.h -- note vpatchlists owns the
+    // top 3 KB). 88 entries lead the beam by ~80 lines; the per-frame
+    // RGB565 rebuild additionally services the ring mid-loop so it can
+    // never fully stale out.
     video_output_set_compose_ring((video_output_precomposed_line_t *)HDMI_LITE_COMPOSE_RING_ADDR,
                                   HDMI_LITE_COMPOSE_RING_ENTRIES);
     // All audio rides the 480 active lines: 800 samples/frame.

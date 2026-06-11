@@ -116,12 +116,16 @@
 #define ACTIVE_RING 96
 #endif
 
-// Everything DMA reads per scanline lives in the top 64 KB of SRAM
-// (0x20070000-0x2007FFFF, banks 4-7): the linker never places anything there
-// (__end__ stays below it, the zone allocator is capped at 0x20070000 by the
-// shortptr window, and the stacks are in scratch X/Y), so it is the quietest
-// region available for the scanout's hot data.
+// Everything DMA reads per scanline lives in the top of SRAM starting at
+// 0x20070000 (banks 4-7): the linker never places anything there (__end__
+// stays below it, the zone allocator is capped at 0x20070000 by the
+// shortptr window, and the stacks are in scratch X/Y), so it is the
+// quietest region available for the scanout's hot data. CAUTION: the top
+// 3 KB (0x2007F400+) is vpatchlists, hand-placed by pd_render.cpp at
+// SRAM_SCRATCH_X_BASE - 0xc00 and rewritten by Core 0 every frame -- the
+// usable region ends at 0x2007F400.
 #define CMDLIST_RAM_BASE 0x20070000u
+#define CMDLIST_RAM_END  0x2007f400u // vpatchlists owns 0x2007f400+
 
 typedef struct {
     uint32_t vblank_vsync_off[VBLANK_LINE_LEN];
@@ -139,7 +143,8 @@ typedef struct {
     uint32_t commands[(V_TOTAL - V_ACTIVE) * 4 + V_ACTIVE * 8 + 4];
 } scanout_ram_t;
 
-_Static_assert(sizeof(scanout_ram_t) <= 0x10000, "scanout data must fit the free top 64KB of SRAM");
+_Static_assert(sizeof(scanout_ram_t) <= CMDLIST_RAM_END - CMDLIST_RAM_BASE,
+               "scanout data must fit below vpatchlists (0x2007f400)");
 
 #define scanout_ram ((scanout_ram_t *)CMDLIST_RAM_BASE)
 

@@ -1575,15 +1575,32 @@ static void I_OPL_PlaySong(void *handle, boolean looping)
 }
 
 #if DOOM_TINY
-// Emergency voice silencer for the music-runaway watchdog: key off EVERY
-// voice (percussion included) without pausing or resetting the song. Stuck
-// voices fall silent; live notes re-trigger on their next MIDI events.
+// Emergency silencer for the music-runaway watchdog, REGISTER level: the
+// bookkeeping-level key-off (VoiceKeyOff over voices[]) proved insufficient
+// on hardware -- a runaway survives it, i.e. an orphaned hardware slot or a
+// voice with a garbage instrument (release rate 0 makes key-off a no-op).
+// Max-attenuate every operator and clear every key bit; the song keeps
+// playing and the next note-ons reprogram level/instrument state anyway.
 void I_OPL_AllNotesOff(void)
 {
+    static const uint8_t op_offsets[] = {
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
+    };
     if (!music_initialized)
     {
         return;
     }
+    for (unsigned int i = 0; i < sizeof(op_offsets); ++i)
+    {
+        OPL_WriteRegister(OPL_REGS_LEVEL + op_offsets[i], 0x3f); // max attenuation
+    }
+    for (unsigned int ch = 0; ch < 9; ++ch)
+    {
+        OPL_WriteRegister(OPL_REGS_FREQ_2 + ch, 0); // key off, freq cleared
+    }
+    // Keep the voice bookkeeping consistent with the silenced hardware.
     for (unsigned int i = 0; i < num_opl_voices; ++i)
     {
         if (voices[i].channel != NULL)

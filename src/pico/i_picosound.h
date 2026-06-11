@@ -34,9 +34,13 @@ typedef struct audio_buffer {
     uint32_t sample_count;
 } audio_buffer_t;
 
-// HDMI audio is clocked at 48 kHz (exactly 800 samples per 60 Hz frame at
-// the 25.2 MHz pixel clock); both OPL engines accept an arbitrary rate.
-#define PICO_SOUND_SAMPLE_FREQ 48000
+// EXPERIMENT (music-runaway bisect): back to the OPL chip-native rate that
+// upstream ran clean for hours -- the emulator ignores the rate argument
+// with EMU8950_NO_RATECONV, so 48000 only changed the callback-scheduling
+// bookkeeping in opl_pico.c. HDMI islands still deliver at 48 kHz (the
+// mixer ring decouples the rates); playback pitch is unchanged either way.
+// If NF stays 0 with 49716, the rate bookkeeping was the runaway trigger.
+#define PICO_SOUND_SAMPLE_FREQ 49716
 
 #ifndef NUM_SOUND_CHANNELS
 // this is the defaul tin game not 16

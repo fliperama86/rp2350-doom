@@ -438,6 +438,33 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
 - Note: G2/G3 UF2s end ~9 KB below the WHX base — watch this margin when
   adding code to LITE builds.
 
+### G2 result #1 (2026-06-11) + ROOT CAUSE: vpatchlists collision
+- Observed: title + tone fine; at attract-mode entry, black screen then
+  **signal drop** (= Core 1 death). Note `IDLE_AFTER_FIRST_DISPLAY` only
+  engages at `gamestate==GS_LEVEL`, so G2 runs the full demo-entry path
+  live before idling — the gate legitimately exercised the transition.
+- Root cause (found by inspection, fixed in `69ec8fb4`): **the top 64 KB is
+  NOT free.** `pd_render.cpp` hand-places `vpatchlists` (3 KB) at
+  `SRAM_SCRATCH_X_BASE - 0xc00 = 0x2007F400` on RP2350 — a cast pointer,
+  invisible in the linker map. LITE's `hdmi_status_buffer`
+  (0x2007D400+0x2800) overlapped it by 2 KB. First status-bar render (demo
+  entry) trampled the overlay lists Core 1 walks in
+  `new_frame_init_overlays...` (asserts compiled out in MinSizeRel) → wild
+  writes into SCRATCH_X (pico_hdmi ISR data) → signal drop. Title was fine
+  because the status buffer is untouched until a level HUD renders. Also
+  explains build-lite's undocumented demo-entry deaths and why cmdlist
+  (status buffer in BSS) plays the whole demo loop.
+- Fix: LITE region repacked below `0x2007F400` (compose ring 96→88), the
+  squatter documented + asserted in `hdmi_lite_layout.h` and capped in
+  `hstx_cmdlist.c`. **Usable region is 0x20070000–0x2007F400 (61 KB).**
+- Fixed G2 reflashed 2026-06-11. Expected now: title + tone → demo entry →
+  first level frame frozen + tone continues + signal holds. Then G3.
+- Remaining pre-known risks for G3+: concurrent Z_Malloc (Core 1's first
+  PLAYPAL `W_CacheLumpNum` vs Core 0 zone churn — only the libc wrappers
+  hard_assert, `Z_Malloc` itself has no cross-core lock), zone headroom
+  (~35.6 KB with sound enabled; cp=99 breadcrumb), Core 1 stack (8 KB, now
+  also carries printf/snprintf/compose).
+
 ### Post-flawless polish backlog (do not mix into the gates)
 Tear: rebuild already starts at frame IRQ; vblank+letterbox (~2.9 ms) nearly
 covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen

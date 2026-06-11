@@ -835,7 +835,8 @@ static void SetMouseButtons(unsigned int buttons_mask)
 boolean G_Responder (event_t* ev) 
 {
 #if USE_FPS
-    if (ev->type == ev_keydown && ev->data2 =='\\') {
+    // '\' or F11 (second mapping; '\' has been unreliable on some setups)
+    if (ev->type == ev_keydown && (ev->data2 == '\\' || ev->data1 == KEY_F11)) {
         show_fps ^= 1;
         return true;
     }

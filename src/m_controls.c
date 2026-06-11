@@ -31,12 +31,23 @@
 key_type_t key_right = KEY_RIGHTARROW;
 key_type_t key_left = KEY_LEFTARROW;
 
+#if DOOM_TINY
+// Pico build has no config file, so bake in a modern layout: WASD movement
+// + J fire + K use. Arrow keys still turn (key_left/right above).
+key_type_t key_up = 'w';
+key_type_t key_down = 's';
+key_type_t key_strafeleft = 'a';
+key_type_t key_straferight = 'd';
+key_type_t key_fire = 'j';
+key_type_t key_use = 'k';
+#else
 key_type_t key_up = KEY_UPARROW;
 key_type_t key_down = KEY_DOWNARROW;
 key_type_t key_strafeleft = ',';
 key_type_t key_straferight = '.';
 key_type_t key_fire = KEY_RCTRL;
 key_type_t key_use = ' ';
+#endif
 key_type_t key_strafe = KEY_RALT;
 key_type_t key_speed = KEY_RSHIFT;
 

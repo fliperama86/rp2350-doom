@@ -465,11 +465,11 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
   continuous, signal held.
 - **G3 PASS**: live attract loop, smooth video + uninterrupted tone, 5+ min
   ("going strong"). Transport fully proven under live Core 0 load.
-- **G4 flashed** (`build-lite-g4`, PICODOOM_NO_MUSIC=1): real SFX through
-  the mixer ring, no OPL. Expect demo SFX audible, MX/PL advancing
-  together. Then G5 (`build-lite-g5`): full SFX + OPL music — watch cp
-  31→34 on music changes, cp=99 = zone OOM, and Core 0 frame rate (OPL at
-  48 kHz is new CPU load).
+- **G4 PASS**: real SFX through the mixer ring (no OPL), audio and video
+  stable.
+- **G5 flashed** (`build-lite-g5`): full SFX + OPL music — watch cp 31→34
+  on music changes, cp=99 = zone OOM, and Core 0 frame rate (OPL at 48 kHz
+  is new CPU load).
 - Remaining pre-known risks for G3+: concurrent Z_Malloc (Core 1's first
   PLAYPAL `W_CacheLumpNum` vs Core 0 zone churn — only the libc wrappers
   hard_assert, `Z_Malloc` itself has no cross-core lock), zone headroom

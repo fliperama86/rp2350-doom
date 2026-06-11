@@ -524,6 +524,24 @@ Two stacked causes:
    PSU is on (no diode between them) — use a jumper on the strap.
 Confirmed working on hardware (overlay KB M/H/R counters + gameplay).
 
+### Music runaway — ROOT CAUSE FOUND (2026-06-11): the RP2040-era OPL asm
+A single instrument/note deterministically drove the OPL into KeyOff-immune
+full-scale output (PK pegged, register-level panic couldn't keep it down).
+Bisect trail: rate bookkeeping acquitted (49716 repro), WHX data acquitted
+(fresh release-whd_gen conversion repro), SFX acquitted (PICODOOM_NO_SFX
+repro), and the host harness (tools/opl_soak — full device stack incl. the
+MUSX path) played EVERYTHING clean... because the harness runs the C slot
+renderer. The device ran `slot_render_pico.S` (EMU8950_ASM=1) — hand asm
+written for the RP2040 Cortex-M0+/interp. **PICODOOM_EMU8950_ASM=0 (C
+path on device): user-confirmed clean on the trigger note.** The asm has
+an RP2350-triggered (or latent) state-corruption edge for specific slot
+parameters; parked for forensics, the C path ships.
+Cost: C renderer is bigger — build ends 0x10041ef0, 272 bytes below the
+WHX. Mitigation queued: board confirmed **16 MB flash** → move TINY_WAD_ADDR
+to 0x10080000 (fruitjam precedent) for permanent headroom; WHD/larger WADs
+become possible too (user direction: use format variants as debugging
+levers first, product choice later).
+
 KNOWN REMAINING (separate, mild): emu8950 with EMU8950_NO_RATECONV ignores
 the requested rate and outputs chip-native 49716 Hz; played at 48 kHz the
 music is ~3.45% flat/slow. Fix candidates: feed OPL_calc through a simple

@@ -94,6 +94,12 @@ if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
     message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
 endif()
 
+set(PICODOOM_EMU8950_ASM "1" CACHE STRING "Use the RP2040-era slot-render ARM asm (0 = equivalent C path, for the music-runaway bisect)")
+set_property(CACHE PICODOOM_EMU8950_ASM PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_EMU8950_ASM MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_EMU8950_ASM must be 0 or 1")
+endif()
+
 set(PICODOOM_NO_SFX "0" CACHE STRING "Diagnostic gate: refuse all SFX starts (no lump caching/ADPCM decode); isolates SFX zone allocations from the music-runaway hunt")
 set_property(CACHE PICODOOM_NO_SFX PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_NO_SFX MATCHES "^[01]$")

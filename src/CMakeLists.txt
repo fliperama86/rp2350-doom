@@ -412,7 +412,10 @@ target_compile_definitions(small_doom_common INTERFACE
         # things we really don't care about but need for diff-ing with non linear version
         # BEWARE - need to turn this off for comparison with on device version which doesn't do nitpicks (though could i guess)
 
-        EMU8950_ASM=1
+        # The slot-render ARM asm was written for the RP2040 (Cortex-M0+).
+        # PICODOOM_EMU8950_ASM=0 runs the equivalent C path (proven clean on
+        # host) -- the music-runaway bisect.
+        $<$<BOOL:${PICODOOM_EMU8950_ASM}>:EMU8950_ASM=1>
 #        EMU8950_NIT_PICKS=1
 #        DUMPO=1
 

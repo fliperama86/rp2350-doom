@@ -367,10 +367,12 @@ static void mix_one_chunk(void)
         if (is_channel_playing(ch)) {
             channel_t *channel = &channels[ch];
             assert(channel->decompressed_size);
-            // Full volume (upstream halved it); the saturating adds below
-            // provide the headroom protection instead.
-            int voll = channel->left;
-            int volr = channel->right;
+            // x0.75 (upstream halved): louder SFX, but full volume puts a
+            // single channel at +-32k (sample +-127 x vol 255) -- the whole
+            // int16 range -- and stacked demo gunfire pinned the mix against
+            // the saturator (constant clipping = "super distorted").
+            int voll = (channel->left * 3) >> 2;
+            int volr = (channel->right * 3) >> 2;
             uint offset_end = channel->decompressed_size * 65536;
             assert(channel->offset < offset_end);
             int16_t *samples = mix_chunk;

@@ -467,9 +467,13 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
   ("going strong"). Transport fully proven under live Core 0 load.
 - **G4 PASS**: real SFX through the mixer ring (no OPL), audio and video
   stable.
-- **G5 flashed** (`build-lite-g5`): full SFX + OPL music — watch cp 31→34
-  on music changes, cp=99 = zone OOM, and Core 0 frame rate (OPL at 48 kHz
-  is new CPU load).
+- **G5 PASS (2026-06-11): full game — live video + SFX + OPL music over
+  HDMI, stable.** The LITE architecture is validated end-to-end. Remaining:
+  G6 soak (long run, save/load, wipes on, throttle off, second sink) and G7
+  productionize (diag overlay off, repoint flash.sh/build-min).
+- Released as `v0.1.0-hdmi-audio` (pre-release; G6/G7 pending), built from
+  `build-lite-g5`. pico_hdmi pinned at `5504c0b`
+  (branch `doom-hdmi-lite` on fliperama86/pico_hdmi).
 - Remaining pre-known risks for G3+: concurrent Z_Malloc (Core 1's first
   PLAYPAL `W_CacheLumpNum` vs Core 0 zone churn — only the libc wrappers
   hard_assert, `Z_Malloc` itself has no cross-core lock), zone headroom

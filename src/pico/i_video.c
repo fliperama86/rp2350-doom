@@ -1417,11 +1417,12 @@ static void hdmi_lite_update_diag_rows(void) {
     // Audio-degradation gauges: CH = SFX channels playing (pegged at 8 =
     // stuck channels), PK = rolling music-only peak (climbing to ~32767 =
     // OPL output runaway), FZ = zone free bytes, SL = underrun silences.
-    snprintf(line, sizeof line, "CH %d PK %lu FZ %lu SL %lu",
+    snprintf(line, sizeof line, "CH %d PK %lu FZ %lu HC %lu NF %lu",
              I_PicoSoundPlayingChannels(),
              (unsigned long)snd_diag_music_peak,
              (unsigned long)snd_diag_zone_free,
-             (unsigned long)hstx_di_queue_silence_count);
+             (unsigned long)snd_diag_heap_bad,
+             (unsigned long)snd_diag_notesoff_count);
     hdmi_lite_draw_text(0, 8, line);
     snprintf(line, sizeof line, "PB %lu CN %lu ST %lu RS %lu",
              (unsigned long)hdmi_diag_pd_publish_count,

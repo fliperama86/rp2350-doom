@@ -57,6 +57,8 @@ bool I_PicoSoundMusicActive(void);
 int I_PicoSoundPlayingChannels(void);
 extern volatile uint32_t snd_diag_music_peak;
 extern volatile uint32_t snd_diag_zone_free;
+extern volatile uint32_t snd_diag_heap_bad;
+extern volatile uint32_t snd_diag_notesoff_count;
 void I_PicoSoundFade(bool in);
 bool I_PicoSoundFading(void);
 #endif

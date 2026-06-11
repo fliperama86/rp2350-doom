@@ -36,6 +36,7 @@
 #include "pico/binary_info.h"
 #include "hardware/gpio.h"
 #include "hardware/sync.h"
+#include "hardware/timer.h"
 
 #define ADPCM_BLOCK_SIZE 128
 #define ADPCM_SAMPLES_PER_BLOCK_SIZE 249
@@ -360,6 +361,10 @@ volatile uint32_t snd_diag_music_peak;
 // Zone free bytes, snapshotted on Core 0 (the zone list must not be walked
 // from Core 1 while Core 0 allocates).
 volatile uint32_t snd_diag_zone_free;
+// First nonzero Z_ValidateHeap result, latched (zone corruption class 1-5).
+volatile uint32_t snd_diag_heap_bad;
+// Times the music-runaway watchdog fired all-notes-off.
+volatile uint32_t snd_diag_notesoff_count;
 
 // Mix one MIX_CHUNK_PAIRS chunk of music + SFX into mix_chunk.
 // Mixing logic matches upstream rp2040-doom's I2S buffer fill.
@@ -450,12 +455,35 @@ static void I_Pico_UpdateSound(void)
 {
     if (!sound_initialized) return;
 
-    // Zone snapshot for the overlay, ~once per second (Core 0 owns the zone).
+    // Zone snapshot + integrity check, ~once per second (Core 0 owns the
+    // zone, and UpdateSound never runs mid-allocation).
     {
         static uint32_t snd_diag_calls;
         if ((++snd_diag_calls & 63) == 0) {
             extern int Z_FreeMemory(void);
+            extern int Z_ValidateHeap(void);
             snd_diag_zone_free = (uint32_t)Z_FreeMemory();
+            if (!snd_diag_heap_bad) {
+                snd_diag_heap_bad = (uint32_t)Z_ValidateHeap();
+            }
+        }
+    }
+
+    // Music-runaway watchdog: the rolling music-only peak pinned at full
+    // scale for ~2 s = stuck/corrupted OPL voices drowning everything (the
+    // saturator then also crushes SFX). Key off every voice; live notes
+    // re-trigger on their next events, stuck ones die. Counted as NF.
+    {
+        static uint32_t pegged_since_ms;
+        uint32_t now_ms = time_us_32() / 1000u;
+        if (snd_diag_music_peak < 32000u) {
+            pegged_since_ms = now_ms;
+        } else if (now_ms - pegged_since_ms > 2000u) {
+            extern void I_OPL_AllNotesOff(void);
+            I_OPL_AllNotesOff();
+            snd_diag_music_peak = 0;
+            pegged_since_ms = now_ms;
+            snd_diag_notesoff_count++;
         }
     }
 

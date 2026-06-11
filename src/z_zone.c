@@ -649,3 +649,42 @@ unsigned int Z_ZoneSize(void)
 {
     return mainzone->size;
 }
+
+//
+// Z_ValidateHeap
+// Bounded, NON-FATAL heap walk for on-screen diagnostics: returns 0 if the
+// zone list is consistent, nonzero otherwise. Unlike Z_CheckHeap it never
+// I_Errors and cannot crash on a trashed list: shortptr decoding confines
+// even garbage links to the mapped shortptr window, and the walk is capped.
+//
+int Z_ValidateHeap(void)
+{
+    memblock_t *sentinel = &mainzone->blocklist;
+    uint8_t *zone_lo = (uint8_t *)mainzone;
+    uint8_t *zone_hi = (uint8_t *)mainzone + mainzone->size;
+    memblock_t *block = memblock_next(sentinel);
+    int prev_free = 0;
+    for (int n = 0; n < 8192; n++) {
+        if (block == sentinel) {
+            return 0; // closed the loop cleanly
+        }
+        if ((uint8_t *)block < zone_lo || (uint8_t *)block >= zone_hi) {
+            return 1; // link points outside the zone
+        }
+        memblock_t *next = memblock_next(block);
+        if (next != sentinel &&
+            (uint8_t *)block + memblock_size(block) != (uint8_t *)next) {
+            return 2; // size does not touch the next block
+        }
+        if (memblock_prev(next) != block) {
+            return 3; // broken back link
+        }
+        int is_free = (block->tag == PU_FREE);
+        if (is_free && prev_free) {
+            return 4; // two consecutive free blocks
+        }
+        prev_free = is_free;
+        block = next;
+    }
+    return 5; // list never closed (cycle / runaway)
+}

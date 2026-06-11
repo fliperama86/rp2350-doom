@@ -1574,6 +1574,26 @@ static void I_OPL_PlaySong(void *handle, boolean looping)
     OPL_SetPaused(0);
 }
 
+#if DOOM_TINY
+// Emergency voice silencer for the music-runaway watchdog: key off EVERY
+// voice (percussion included) without pausing or resetting the song. Stuck
+// voices fall silent; live notes re-trigger on their next MIDI events.
+void I_OPL_AllNotesOff(void)
+{
+    if (!music_initialized)
+    {
+        return;
+    }
+    for (unsigned int i = 0; i < num_opl_voices; ++i)
+    {
+        if (voices[i].channel != NULL)
+        {
+            VoiceKeyOff(&voices[i]);
+        }
+    }
+}
+#endif
+
 static void I_OPL_PauseSong(void)
 {
     unsigned int i;

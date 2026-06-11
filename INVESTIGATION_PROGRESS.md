@@ -411,6 +411,33 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
   production; note rp2040-doom shipped sound+music in 264 KB total, so the
   ~75 KB zone should suffice.
 
+### Session 2026-06-11 (later): pre-gate fixes done, gate builds ready
+- Pre-gate fixes implemented and committed (parent `89aa021b`, pico_hdmi
+  `5504c0b`):
+  - Compose-ring starvation fix: `hdmi_rgb565_build_display_frame()` calls
+    `video_output_compose_service()` + `hdmi_audio_pump()` every 16 rows.
+  - LITE no longer clears `hdmi_rgb565_frame_ready` per rebuild (that would
+    black out ~95 lines every frame; direct-scan modes tear instead).
+  - Stale-fallback counter `video_output_precomposed_stale_count`: shown as
+    `ST` on diag overlay row 3 and in the once-per-second `LITE ...` UART
+    report. Small startup burst normal; growth while running = compose
+    starvation = dropped audio packets.
+  - `src/pico/hdmi_lite_layout.h`: single source of truth + static asserts
+    for the 0x20070000 region (compose ring / audio ring / text canvas /
+    status buffer).
+- Gate builds (all doom_tiny_usb, UF2 end < 0x10042000, nothing linked at
+  0x2007xxxx, `__end__=0x200674d0` -> ~35.6 KB zone):
+  - **G1**: `build-cmdlist/` (rebuilt against current tree, end 0x10039cb8)
+  - **G2**: `build-lite-g2/` (LITE + TONE=1 + IDLE_AFTER_FIRST_DISPLAY=1,
+    end 0x1003fd24) — **FLASHED to the board 2026-06-11**
+  - **G3**: `build-lite-g3/` (LITE + TONE=1, live game, end 0x1003fd04)
+- G2 expected observation: HDMI mode, title-screen frame frozen (Core 0
+  idles after first display), continuous clean 1 kHz square tone, overlay
+  rows in the top letterbox with FE flat, ST flat after boot. Record the
+  result here, then flash `build-lite-g3` (`pi flash`, WHX already present).
+- Note: G2/G3 UF2s end ~9 KB below the WHX base — watch this margin when
+  adding code to LITE builds.
+
 ### Post-flawless polish backlog (do not mix into the gates)
 Tear: rebuild already starts at frame IRQ; vblank+letterbox (~2.9 ms) nearly
 covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen

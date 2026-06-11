@@ -82,17 +82,20 @@
 //--------------------------------------------------------------------
 
 // Size of buffer to hold descriptors and other data used for enumeration
-#define CFG_TUH_ENUMERATION_BUFSIZE 128
+// (128 is too small for many keyboards' config descriptors -> silent
+// enumeration failure)
+#define CFG_TUH_ENUMERATION_BUFSIZE 256
 
-#define CFG_TUH_HUB                 1
+// 2 hubs: an external hub plus a keyboard-integrated one (or a cascaded
+// multi-port hub, which presents as two hub chips)
+#define CFG_TUH_HUB                 2
 #define CFG_TUH_CDC                 0
 #define CFG_TUH_MSC                 0
 #define CFG_TUH_VENDOR              0
 
-// max device support (excluding hub device)
-//#define CFG_TUH_DEVICE_MAX          (CFG_TUH_HUB ? 4 : 1) // hub typically has 4 ports
-// note tinyusb is very wasteful on space
-#define CFG_TUH_DEVICE_MAX          1
+// max device support (excluding hub devices); tinyusb is wasteful on space,
+// but 1 left no room for anything else sharing a hub with the keyboard
+#define CFG_TUH_DEVICE_MAX          4
 #define CFG_TUH_HID                 4 // typical keyboard + mouse device can have 3-4 HID interfaces
 //------------- HID -------------//
 #define CFG_TUH_HID_EPIN_BUFSIZE    64

@@ -101,9 +101,9 @@ if (NOT PICODOOM_NO_MUSIC MATCHES "^[01]$")
 endif()
 
 set(PICODOOM_HDMI_AUDIO_TEST_TONE "0" CACHE STRING "Diagnostic: 1=feed a 1 kHz square wave into the HDMI audio islands (bypasses the game mixer), 2=bake the tone statically into the ring at init (no dynamic island writes at all)")
-set_property(CACHE PICODOOM_HDMI_AUDIO_TEST_TONE PROPERTY STRINGS 0 1 2)
-if (NOT PICODOOM_HDMI_AUDIO_TEST_TONE MATCHES "^[0-2]$")
-    message(FATAL_ERROR "PICODOOM_HDMI_AUDIO_TEST_TONE must be 0, 1, or 2")
+set_property(CACHE PICODOOM_HDMI_AUDIO_TEST_TONE PROPERTY STRINGS 0 1 2 3)
+if (NOT PICODOOM_HDMI_AUDIO_TEST_TONE MATCHES "^[0-3]$")
+    message(FATAL_ERROR "PICODOOM_HDMI_AUDIO_TEST_TONE must be 0-3 (3 = pure sine)")
 endif()
 
 set(PICODOOM_HDMI_FIFO_PROBE "0" CACHE STRING "Diagnostic: sample the HSTX FIFO level/EMPTY per active scanline and report starvation over UART")

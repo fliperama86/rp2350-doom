@@ -1538,7 +1538,23 @@ static void hdmi_audio_pump(void) {
 #endif
     while (hstx_di_queue_get_level() < 64) {
         audio_sample_t samples[4];
-#if PICODOOM_HDMI_AUDIO_TEST_TONE
+#if PICODOOM_HDMI_AUDIO_TEST_TONE == 3
+        // 750 Hz pure sine (48000/64 samples). A sine exposes every dropped,
+        // repeated or corrupted sample as audible grit -- the square tone
+        // masks exactly those artifacts. Quarter-wave table, amp ~37% FS.
+        static const int16_t qsin[17] = {0, 1176, 2341, 3483, 4592, 5657,
+                                         6667, 7613, 8485, 9276, 9978, 10583,
+                                         11087, 11483, 11769, 11942, 12000};
+        for (int i = 0; i < 4; i++) {
+            uint32_t p = tone_phase++ & 63u;
+            int16_t v = (p <= 16)   ? qsin[p]
+                        : (p <= 32) ? qsin[32 - p]
+                        : (p <= 48) ? (int16_t)-qsin[p - 32]
+                                    : (int16_t)-qsin[64 - p];
+            samples[i].left = v;
+            samples[i].right = v;
+        }
+#elif PICODOOM_HDMI_AUDIO_TEST_TONE
         for (int i = 0; i < 4; i++) {
             int16_t v = ((tone_phase++ / 24u) & 1u) ? 3000 : -3000;
             samples[i].left = v;

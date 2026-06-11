@@ -459,6 +459,17 @@ over unchanged. Do NOT resume the cmdlist-HDMI silence mystery.
   `hstx_cmdlist.c`. **Usable region is 0x20070000–0x2007F400 (61 KB).**
 - Fixed G2 reflashed 2026-06-11. Expected now: title + tone → demo entry →
   first level frame frozen + tone continues + signal holds. Then G3.
+
+### G2/G3 PASS (2026-06-11, post-vpatchlists-fix)
+- **G2 PASS**: title + tone → demo entry → first level frame frozen, tone
+  continuous, signal held.
+- **G3 PASS**: live attract loop, smooth video + uninterrupted tone, 5+ min
+  ("going strong"). Transport fully proven under live Core 0 load.
+- **G4 flashed** (`build-lite-g4`, PICODOOM_NO_MUSIC=1): real SFX through
+  the mixer ring, no OPL. Expect demo SFX audible, MX/PL advancing
+  together. Then G5 (`build-lite-g5`): full SFX + OPL music — watch cp
+  31→34 on music changes, cp=99 = zone OOM, and Core 0 frame rate (OPL at
+  48 kHz is new CPU load).
 - Remaining pre-known risks for G3+: concurrent Z_Malloc (Core 1's first
   PLAYPAL `W_CacheLumpNum` vs Core 0 zone churn — only the libc wrappers
   hard_assert, `Z_Malloc` itself has no cross-core lock), zone headroom

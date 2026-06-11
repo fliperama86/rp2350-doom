@@ -352,6 +352,15 @@ static boolean I_Pico_SoundIsPlaying(int channel)
     return is_channel_playing(channel);
 }
 
+// Diagnostics for the "distorts after a while" hunt (read by the overlay):
+// rolling peak of the MUSIC-ONLY signal (before SFX mix) -- if this climbs
+// to ~32767 over minutes, the OPL output itself is growing (state runaway)
+// and the saturator is crushing everything else.
+volatile uint32_t snd_diag_music_peak;
+// Zone free bytes, snapshotted on Core 0 (the zone list must not be walked
+// from Core 1 while Core 0 allocates).
+volatile uint32_t snd_diag_zone_free;
+
 // Mix one MIX_CHUNK_PAIRS chunk of music + SFX into mix_chunk.
 // Mixing logic matches upstream rp2040-doom's I2S buffer fill.
 static void mix_one_chunk(void)
@@ -360,6 +369,13 @@ static void mix_one_chunk(void)
         hdmi_diag_checkpoint = 62;
         music_generator(&mix_chunk_buffer);
         hdmi_diag_checkpoint = 63;
+        uint32_t peak = snd_diag_music_peak;
+        peak -= peak >> 6; // slow decay so the overlay shows the trend
+        for (uint i = 0; i < MIX_CHUNK_PAIRS * 2; i++) {
+            uint32_t a = (uint32_t)(mix_chunk[i] < 0 ? -mix_chunk[i] : mix_chunk[i]);
+            if (a > peak) peak = a;
+        }
+        snd_diag_music_peak = peak;
     } else {
         memset(mix_chunk, 0, sizeof(mix_chunk));
     }
@@ -433,6 +449,15 @@ static void mix_one_chunk(void)
 static void I_Pico_UpdateSound(void)
 {
     if (!sound_initialized) return;
+
+    // Zone snapshot for the overlay, ~once per second (Core 0 owns the zone).
+    {
+        static uint32_t snd_diag_calls;
+        if ((++snd_diag_calls & 63) == 0) {
+            extern int Z_FreeMemory(void);
+            snd_diag_zone_free = (uint32_t)Z_FreeMemory();
+        }
+    }
 
     // Top up the ring; the HDMI side drains exactly 800 pairs per 60 Hz frame.
     hdmi_diag_checkpoint = 60;
@@ -512,6 +537,14 @@ bool I_PicoSoundIsInitialized(void) {
 }
 
 // Diagnostic accessors (e.g. for on-screen audio status stripes).
+int I_PicoSoundPlayingChannels(void) {
+    int n = 0;
+    for (int ch = 0; ch < NUM_SOUND_CHANNELS; ch++) {
+        if (is_channel_playing(ch)) n++;
+    }
+    return n;
+}
+
 uint32_t I_PicoSoundMixedCount(void) {
     return audio_ring_head;
 }

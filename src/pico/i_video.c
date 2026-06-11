@@ -1383,7 +1383,7 @@ static const diag_glyph_t hdmi_lite_font[] = {
     {'L', {0x7F,0x40,0x40,0x40,0x40}}, {'M', {0x7F,0x02,0x0C,0x02,0x7F}},
     {'N', {0x7F,0x04,0x08,0x10,0x7F}}, {'P', {0x7F,0x09,0x09,0x09,0x06}},
     {'R', {0x7F,0x09,0x19,0x29,0x46}}, {'S', {0x46,0x49,0x49,0x49,0x31}},
-    {'T', {0x01,0x01,0x7F,0x01,0x01}},
+    {'T', {0x01,0x01,0x7F,0x01,0x01}}, {'Z', {0x61,0x51,0x49,0x45,0x43}},
     {'X', {0x63,0x14,0x08,0x14,0x63}}, {'Y', {0x07,0x08,0x70,0x08,0x07}},
 };
 
@@ -1413,26 +1413,14 @@ static void hdmi_lite_update_diag_rows(void) {
              (unsigned long)hdmi_diag_i_error_count,
              (unsigned long)hdmi_diag_checkpoint);
     hdmi_lite_draw_text(0, 0, line);
-#if defined(USB_SUPPORT) && USB_SUPPORT
-    // USB keyboard bring-up: device mounts / HID interfaces / kbd reports.
-    // PL stays on as the audio heartbeat.
-    {
-        extern volatile uint32_t hdmi_diag_usb_mount_count;
-        extern volatile uint32_t hdmi_diag_hid_mount_count;
-        extern volatile uint32_t hdmi_diag_kbd_report_count;
-        snprintf(line, sizeof line, "KB M %lu H %lu R %lu SL %lu",
-                 (unsigned long)hdmi_diag_usb_mount_count,
-                 (unsigned long)hdmi_diag_hid_mount_count,
-                 (unsigned long)hdmi_diag_kbd_report_count,
-                 (unsigned long)hstx_di_queue_silence_count);
-    }
-#else
-    snprintf(line, sizeof line, "MX %lu PL %lu FE %lu FL %lu",
-             (unsigned long)I_PicoSoundMixedCount(),
-             (unsigned long)I_PicoSoundPulledCount(),
-             (unsigned long)hdmi_lite_fifo_empty_events,
-             (unsigned long)hdmi_lite_fifo_min_level);
-#endif
+    // Audio-degradation gauges: CH = SFX channels playing (pegged at 8 =
+    // stuck channels), PK = rolling music-only peak (climbing to ~32767 =
+    // OPL output runaway), FZ = zone free bytes, SL = underrun silences.
+    snprintf(line, sizeof line, "CH %d PK %lu FZ %lu SL %lu",
+             I_PicoSoundPlayingChannels(),
+             (unsigned long)snd_diag_music_peak,
+             (unsigned long)snd_diag_zone_free,
+             (unsigned long)hstx_di_queue_silence_count);
     hdmi_lite_draw_text(0, 8, line);
     snprintf(line, sizeof line, "PB %lu CN %lu RY %d FR %d ST %lu",
              (unsigned long)hdmi_diag_pd_publish_count,

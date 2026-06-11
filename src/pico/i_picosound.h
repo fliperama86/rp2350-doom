@@ -52,6 +52,11 @@ int I_PicoSoundPullStereo(int16_t *dst, int sample_pairs);
 uint32_t I_PicoSoundMixedCount(void);
 uint32_t I_PicoSoundPulledCount(void);
 bool I_PicoSoundMusicActive(void);
+// Diagnostics: SFX channels currently playing; rolling music-only peak and
+// Core-0-snapshotted zone free bytes (overlay gauges).
+int I_PicoSoundPlayingChannels(void);
+extern volatile uint32_t snd_diag_music_peak;
+extern volatile uint32_t snd_diag_zone_free;
 void I_PicoSoundFade(bool in);
 bool I_PicoSoundFading(void);
 #endif

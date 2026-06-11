@@ -547,7 +547,13 @@ bool I_PicoSoundMusicActive(void) {
 }
 
 void I_PicoSoundSetMusicGenerator(void (*generator)(audio_buffer_t *buffer)) {
+#if PICODOOM_NO_MUSIC
+    // G4 gate: SFX-only mixer. Song registration and level transitions
+    // still run; the generator is just never installed.
+    (void)generator;
+#else
     music_generator = generator;
+#endif
 }
 
 #if PICO_ON_DEVICE

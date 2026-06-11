@@ -94,6 +94,12 @@ if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
     message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
 endif()
 
+set(PICODOOM_NO_MUSIC "0" CACHE STRING "Diagnostic gate: never install the OPL music generator (SFX-only mixer); song registration and level transitions still run")
+set_property(CACHE PICODOOM_NO_MUSIC PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_NO_MUSIC MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_NO_MUSIC must be 0 or 1")
+endif()
+
 set(PICODOOM_HDMI_AUDIO_TEST_TONE "0" CACHE STRING "Diagnostic: 1=feed a 1 kHz square wave into the HDMI audio islands (bypasses the game mixer), 2=bake the tone statically into the ring at init (no dynamic island writes at all)")
 set_property(CACHE PICODOOM_HDMI_AUDIO_TEST_TONE PROPERTY STRINGS 0 1 2)
 if (NOT PICODOOM_HDMI_AUDIO_TEST_TONE MATCHES "^[0-2]$")
@@ -235,6 +241,7 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_HDMI_LITE=${PICODOOM_HDMI_LITE}
         $<$<BOOL:${PICODOOM_HDMI_LITE}>:PICO_HDMI_PRECOMPOSED_ACTIVE_LINES=1>
         PICODOOM_BOOT_HALT=${PICODOOM_BOOT_HALT}
+        PICODOOM_NO_MUSIC=${PICODOOM_NO_MUSIC}
         PICODOOM_HDMI_AUDIO_TEST_TONE=${PICODOOM_HDMI_AUDIO_TEST_TONE}
         $<$<BOOL:${PICODOOM_HDMI_240P}>:VIDEO_MODE_320x240=1>
         PICODOOM_SOLID_COLOR=${PICODOOM_SOLID_COLOR}

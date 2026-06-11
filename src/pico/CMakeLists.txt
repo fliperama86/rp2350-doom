@@ -94,6 +94,12 @@ if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
     message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
 endif()
 
+set(PICODOOM_NO_SFX "0" CACHE STRING "Diagnostic gate: refuse all SFX starts (no lump caching/ADPCM decode); isolates SFX zone allocations from the music-runaway hunt")
+set_property(CACHE PICODOOM_NO_SFX PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_NO_SFX MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_NO_SFX must be 0 or 1")
+endif()
+
 set(PICODOOM_NO_MUSIC "0" CACHE STRING "Diagnostic gate: never install the OPL music generator (SFX-only mixer); song registration and level transitions still run")
 set_property(CACHE PICODOOM_NO_MUSIC PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_NO_MUSIC MATCHES "^[01]$")
@@ -242,6 +248,7 @@ target_compile_definitions(common_pico INTERFACE
         $<$<BOOL:${PICODOOM_HDMI_LITE}>:PICO_HDMI_PRECOMPOSED_ACTIVE_LINES=1>
         PICODOOM_BOOT_HALT=${PICODOOM_BOOT_HALT}
         PICODOOM_NO_MUSIC=${PICODOOM_NO_MUSIC}
+        PICODOOM_NO_SFX=${PICODOOM_NO_SFX}
         PICODOOM_HDMI_AUDIO_TEST_TONE=${PICODOOM_HDMI_AUDIO_TEST_TONE}
         $<$<BOOL:${PICODOOM_HDMI_240P}>:VIDEO_MODE_320x240=1>
         PICODOOM_SOLID_COLOR=${PICODOOM_SOLID_COLOR}

@@ -327,6 +327,11 @@ extern volatile uint32_t hdmi_diag_checkpoint;
 
 static int I_Pico_StartSound(should_be_const sfxinfo_t *sfxinfo, int channel, int vol, int sep, int pitch)
 {
+#if PICODOOM_NO_SFX
+    // Diagnostic gate: no lump caching, no ADPCM decode, no SFX zone
+    // allocations at all -- isolates them from the music-runaway hunt.
+    return -1;
+#endif
     if (!check_and_init_channel(channel)) return -1;
 
     hdmi_diag_checkpoint = 50;

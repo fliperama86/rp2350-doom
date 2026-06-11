@@ -510,6 +510,20 @@ clean on host — /tmp/cs_audit.c):
 dropped/repeated-sample artifacts — always validate audio transports with
 a pure sine + spectrum analysis of a recording.
 
+### USB keyboard (2026-06-11) — RESOLVED
+Two stacked causes:
+1. Software: `CFG_TUH_DEVICE_MAX 1` (hub ate the only device slot), 1 hub
+   slot, 128-byte enumeration buffer. Fixed in `38e0dd21` (4 devices, 2
+   hubs, 256 bytes).
+2. Hardware: the board is a **WeAct RP2350B on a custom PCB powered via
+   VSYS** — the USB connector's VBUS is behind the VBUS→VSYS diode, so the
+   connector pin stayed at 0 V: a direct keyboard got no power, and the
+   powered hub kept its downstream ports off (hubs gate them on upstream
+   VBUS presence). Fix: strap the 5 V rail to the board's 5V/VBUS pin.
+   CAUTION: with VBUS driven, never connect the Mac's USB cable while the
+   PSU is on (no diode between them) — use a jumper on the strap.
+Confirmed working on hardware (overlay KB M/H/R counters + gameplay).
+
 KNOWN REMAINING (separate, mild): emu8950 with EMU8950_NO_RATECONV ignores
 the requested rate and outputs chip-native 49716 Hz; played at 48 kHz the
 music is ~3.45% flat/slow. Fix candidates: feed OPL_calc through a simple

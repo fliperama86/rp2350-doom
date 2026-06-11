@@ -28,19 +28,20 @@
 // Keyboard controls
 //
 
-key_type_t key_right = KEY_RIGHTARROW;
-key_type_t key_left = KEY_LEFTARROW;
-
 #if DOOM_TINY
-// Pico build has no config file, so bake in a modern layout: WASD movement
-// + J fire + K use. Arrow keys still turn (key_left/right above).
+// Pico build has no config file, so bake in a keyboard-only layout (no
+// mouse for look): W/S move, A/D TURN, Q/E strafe, J fire, K use.
+key_type_t key_right = 'd';
+key_type_t key_left = 'a';
 key_type_t key_up = 'w';
 key_type_t key_down = 's';
-key_type_t key_strafeleft = 'a';
-key_type_t key_straferight = 'd';
+key_type_t key_strafeleft = 'q';
+key_type_t key_straferight = 'e';
 key_type_t key_fire = 'j';
 key_type_t key_use = 'k';
 #else
+key_type_t key_right = KEY_RIGHTARROW;
+key_type_t key_left = KEY_LEFTARROW;
 key_type_t key_up = KEY_UPARROW;
 key_type_t key_down = KEY_DOWNARROW;
 key_type_t key_strafeleft = ',';

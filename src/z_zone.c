@@ -337,6 +337,11 @@ Z_MallocNoUser
                 extern volatile uint32_t hdmi_diag_checkpoint;
                 hdmi_diag_checkpoint = 99; // zone exhausted (panic below halts silently)
             }
+#if PICODOOM_CRASH_DIAG
+            // Do not walk an exhausted/damaged heap or enter stdio to report it.
+            // Size includes alignment and the allocation header.
+            picodoom_crash_stop(CRASH_OOM, size, tag);
+#endif
             panic("out of memory");
 #else
             I_Error ("Z_Malloc: failed on allocation of %i bytes", size);

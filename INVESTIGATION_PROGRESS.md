@@ -569,3 +569,173 @@ covers the ~3 ms rebuild — fine-tune pacing only if visible. Full-screen
 stretch (`row*200/480`). Core 1 render assist: evaluate FPS first; it
 competes with compose deadlines under LITE, so only revisit if needed.
 cmdlist HDMI-audio mystery: parked indefinitely.
+
+## Investigation 2026-09-15: repeatable attract-mode freeze on new PCB
+
+User reports a permanent frozen picture after a few minutes, consistently at
+one part of attract mode, in addition to the earlier transient output drops.
+Prioritize the repeatable freeze. Audio behavior and exact demo scene still
+need clarification; do not assume this is a CPU HardFault or a power brownout.
+
+Read-only inspection of the current build (no firmware changes or flashing):
+- New-board memory records RP2354B with 2 MB flash. Current cached WHX base is
+  0x10042000, code ends at 0x10041cc4 (828 bytes clear), and doom1.whx ends at
+  0x101f9878. Current local images fit without overlap. Actual on-board data
+  has NOT been read back/verified in this investigation.
+- The no-argument flash.sh still configures 0x10080000, unsuitable for this
+  2 MB board. Do not use it to rebuild/reflash unchanged. Its fallback address
+  is 0x10042000, but the binary_info-derived address takes precedence.
+- Critical diagnostic blind spot: NO_IERROR=1 makes I_Error a bare breakpoint
+  macro in src/i_system.h. It bypasses the counter in i_system.c entirely.
+  Therefore ER=0 does NOT acquit engine errors, even with the overlay enabled.
+- The linked isr_hardfault is the SDK weak breakpoint-only default, confirmed
+  by disassembly. No fault PC or cause is captured. PICODOOM_DIAG_OVERLAY=0.
+- __end__=0x20067fdc leaves 32804 bytes to the zone ceiling at 0x20070000,
+  before zone bookkeeping and runtime allocations. OOM has CP=99, but the
+  overlay is currently off. Core 0's reserved stack is 2 KB, guards disabled;
+  this is a risk to measure, not evidence of an overflow.
+- No Pico, SWD probe, or UART adapter enumerated on the Mac. The USB HDMI
+  capture device enumerates, but a one-frame read was black, not a crash trace.
+
+Next discriminating experiment: capture the actual engine-error site and/or
+fault PC, plus existing heap/checkpoint telemetry, during the repeatable
+freeze. Do not rely on the existing ER counter alone. If diagnostics grow
+past 0x10042000, relocate WHX to a checked 4 KB boundary within the 2 MB chip
+and reflash BOTH firmware and data. Preserve the current reproducer first.
+No root cause established from source inspection alone.
+
+### Crash-readout build prepared (2026-09-15, not yet flashed)
+
+Implemented `PICODOOM_CRASH_DIAG=1`, gated off by default. Source, test, packaging
+script, and readout legend live in `src/pico/crash_diag/`.
+- RAM-resident stackless fault capture, per-core records, published last with
+  barriers. Fault vectors point to the new handler. Invalid/unsupported stack
+  frames are not dereferenced. No printf, allocation, reboot, or flash writes.
+- Silent I_Error now records its caller and source line; zone OOM records the
+  allocation size/tag; panic/assert wrappers retain the original caller without
+  entering stdio. The old ER counter is updated for captured engine errors.
+- The diagnostic heap snapshot validates before its unbounded Z_FreeMemory walk,
+  and stops with a heap-corruption record if validation fails.
+- The existing 3-row canvas shows game/HDMI progress while running, then replaces
+  it with the fatal report. On-screen reporting requires Core 1/HDMI to survive;
+  otherwise the RAM record needs SWD. This does not capture arbitrary deadlocks.
+
+Only cache changes from the user's reproducer: crash diagnostics on, overlay on,
+WHX relocated from 0x10042000 to 0x10044000. Clocks, HDMI/audio configuration,
+and attract sequence unchanged. No nested pico_hdmi changes made in this work.
+
+Validation:
+- MinSizeRel doom_tiny_usb build passed (existing unrelated warnings remain).
+- 26 Unicorn tests executed the linked ARM handlers with mocked SRAM/MMIO:
+  software stops/wrappers, both cores, MSP/PSP and FP/basic frames, bad stack
+  bounds/stack-entry failures, publication ordering, fault vectors, text capacity.
+  This is NOT a hardware exception/scanout test.
+- Diagnostic-off build also passed. It was not byte-identical to the saved
+  original baseline, so rollback uses the preserved original, not a rebuild.
+  Re-enabling diagnostics reproduced the exact previously saved diagnostic ELF.
+- Packager verified matching code BIN/UF2 and every combined UF2 payload byte;
+  bad magic, truncated blocks, and duplicate pages were rejected in negative tests.
+- `git diff --check` passed.
+
+Ready-to-flash artifact: `build/diagnostics/doom_crash_full.uf2` (firmware AND WHX).
+Matching symbols: `build/diagnostics/doom_crash_full.elf`.
+Code end 0x100423fc; WHX ends 0x101fb878; padded image has 18176 bytes of margin
+inside 2 MB. The code-only UF2 must NOT be flashed with the old WHX placement.
+The pre-diagnostic image, ELF, cache, patches and full rollback UF2 are preserved
+under `build/diagnostics/baseline-20260915/`.
+
+The board is not enumerated for flashing. Await operator USB/BOOTSEL coordination,
+with external power off and any VBUS strap open, before `pi flash` of the FULL UF2.
+No hardware reproduction or root-cause confirmation yet.
+
+### Diagnostic image flashed (2026-09-15)
+
+After operator BOOTSEL/USB coordination, `pi flash
+build/diagnostics/doom_crash_full.uf2` completed successfully (100% and exit 0),
+including both code and relocated WHX, then rebooted into application mode.
+The first attempt found no BOOTSEL device and failed without loading; the retry
+following the user's second ready acknowledgement found the board and succeeded.
+Matching capture symbols remain `build/diagnostics/doom_crash_full.elf`.
+A one-frame read of the Mac's USB Video capture after flashing was black, so
+HDMI startup/readout has not been visually confirmed. Do not interpret this
+alone as a firmware boot failure; the capture routing/normal powered setup is
+not yet confirmed. Coordinate return to normal setup with Mac USB disconnected
+before external power or a VBUS strap is restored.
+
+### Hardware capture: OOM, followed by confirmed thinker-pool bug (2026-09-15)
+
+User supplied `/Users/dudu/Desktop/Untitled.png`, preserved with the exact flashed
+ELF/UF2 under `build/diagnostics/oom-capture-20260915/`. Readout:
+`C0 K3 PC 10001CDF LR 10001CDF`, `FS 00000000 HS 00000000 SP 20081DC8`,
+`D 680 X 00000005 TC 6022 CP 99`.
+
+This is the explicit zone out-of-memory stop, not a captured CPU fault. The
+address resolves to `Z_MallocNoUser`, src/z_zone.c:343. The 680-byte request
+includes the 8-byte zone header; tag 5 is PU_LEVEL. Matching ELF DWARF says
+mobjfull_t is 84 bytes, so a new full-actor pool costs exactly 8*84+8 = 680.
+The record itself does not include the allocator's caller or total/largest free
+block, so do not claim the photo alone identifies the upstream allocation site.
+
+Code inspection found a definite lifetime-order bug in Z_ThinkMallocImpl:
+- The highest free slot holds the link to the next partially free pool.
+- The allocator called memset on the chosen slot before following its link.
+- When that slot was the last free one, the link had become zero, orphaning
+  every remaining partial pool. Their free slots could no longer be reused,
+  although the zone list itself remained structurally valid.
+
+Reproduced against the EXACT flashed ELF by emulating the linked thinker AND
+zone allocators (only platform I_ZoneBase stubbed). Filling A/B/C, freeing one
+slot in each, and refilling C immediately loses B/A from the partial-pool list.
+The first regression fails with 'Lost partial pools'; failure log is saved beside
+that ELF. Thus this is verified executable behavior, not just a source suspicion.
+
+Fix in src/doom/p_tick.c: clear the allocation bitmap and follow the partial-pool
+link before memset, then initialize the allocated object's pool_info. No pool
+sizes, memory layout, clocks, or HDMI/audio configuration changed.
+
+Patched validation:
+- 16 last-free-slot cases (all 8 positions, both actor sizes) pass.
+- 3000 deterministic mixed allocate/free operations pass: exact partial-pool
+  reachability, no object aliasing, zero initialization, valid zone, full reclamation.
+- Non-pooled objects and 3 level teardown/reinitialization cycles pass.
+- The 26 crash-handler tests still pass; build and git diff --check pass.
+- Diagnostic SRAM end remains 0x20068150, so the fix does NOT simply enlarge heap.
+
+Ready artifact: `build/diagnostics/doom_pool_fix_full.uf2`, matching `.elf` beside
+it; combined code+WHX byte-verified within 2 MB. Code is 16 bytes smaller than
+crashed diagnostic build. Original crash ELF retained for interpreting old photos.
+Await operator BOOTSEL coordination before flashing. The bug is confirmed, but
+its sufficiency to resolve the attract-mode freeze still needs a hardware rerun.
+
+Test-harness lesson: ELF Thumb function symbol values carry bit 0; Unicorn code
+hooks report aligned addresses. Mask function symbols with & ~1 for hook matching,
+otherwise a platform stub is silently skipped and unrelated MMIO reads fail.
+
+### Pool fix flashed (2026-09-15)
+
+After operator ready acknowledgement, `pi flash
+build/diagnostics/doom_pool_fix_full.uf2` completed to 100%, exited 0, and
+rebooted the board into application mode. Both firmware and relocated WHX were
+included. On-screen crash diagnostics remain enabled. Matching symbols are
+`build/diagnostics/doom_pool_fix_full.elf`; the earlier OOM photo must still be
+resolved against its archived pre-fix ELF. Awaiting user attract-mode rerun past
+the former TC6022 crash point and continued looping; hardware cure not yet proven.
+
+### Early pool-fix hardware observation (2026-09-15)
+
+User reports: "so far so good" and, incidentally, no "brownouts" yet on the
+patched build. Elapsed runtime, completed attract loops, and overlay counters
+were not supplied. Encouraging early result, not a completed soak or proof that
+the older transient output drops shared the allocator bug's cause. No further
+firmware changes made in response to this observation.
+
+### Pool-fix attract-mode reproduction PASS (2026-09-15)
+
+User reports the patched build has completed approximately FOUR attract-mode
+loops without the formerly repeatable freeze. This is a hardware pass for the
+reported reproducer, supplementing the failing-before/passing-after allocator
+regression. Treat that repeatable OOM crash as resolved by the pool-link ordering
+fix for the tested workload. This is not an all-level/gameplay endurance claim.
+The earlier no-dropout observation remains encouraging, but neither a common
+cause nor a separate HDMI-dropout cure has been established. Diagnostic overlay
+is still enabled; no further flashing/configuration change was made.

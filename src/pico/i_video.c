@@ -52,6 +52,9 @@
 #include "hardware/gpio.h"
 #include "picodoom.h"
 #include "image_decoder.h"
+#if PICODOOM_CRASH_DIAG
+#include "crash_diag/crash_diag.h"
+#endif
 #if PICO_ON_DEVICE
 #include "hardware/dma.h"
 #include "hardware/structs/xip_ctrl.h"
@@ -1386,6 +1389,10 @@ static const diag_glyph_t hdmi_lite_font[] = {
     {'R', {0x7F,0x09,0x19,0x29,0x46}}, {'S', {0x46,0x49,0x49,0x49,0x31}},
     {'T', {0x01,0x01,0x7F,0x01,0x01}}, {'Z', {0x61,0x51,0x49,0x45,0x43}},
     {'X', {0x63,0x14,0x08,0x14,0x63}}, {'Y', {0x07,0x08,0x70,0x08,0x07}},
+#if PICODOOM_CRASH_DIAG
+    {'A', {0x7E,0x11,0x11,0x11,0x7E}}, {'D', {0x7F,0x41,0x41,0x22,0x1C}},
+    {'V', {0x1F,0x20,0x40,0x20,0x1F}},
+#endif
 };
 
 static void hdmi_lite_draw_text(int x, int y, const char *s) {
@@ -1408,6 +1415,54 @@ static void hdmi_lite_draw_text(int x, int y, const char *s) {
 
 static void hdmi_lite_update_diag_rows(void) {
     char line[56];
+
+#if PICODOOM_CRASH_DIAG
+    // Each core publishes its record only after all fields have been written.
+    // Core 1 can display Core 0's fatal stop without calling into the game,
+    // touching the zone allocator, or acquiring any Core 0 locks.
+    unsigned core = picodoom_crash[0].kind ? 0 : 1;
+    const volatile picodoom_crash_record_t *crash = &picodoom_crash[core];
+    uint32_t kind = crash->kind;
+    __dmb();
+    memset(hdmi_lite_text_canvas, 0, HDMI_LITE_TEXT_ROWS * SCREENWIDTH * 2);
+    if (kind) {
+        snprintf(line, sizeof line, "C%u K%lu PC %08lX LR %08lX", core,
+                 (unsigned long)kind, (unsigned long)crash->pc,
+                 (unsigned long)crash->lr);
+        hdmi_lite_draw_text(0, 0, line);
+        snprintf(line, sizeof line, "FS %08lX HS %08lX SP %08lX",
+                 (unsigned long)crash->cfsr, (unsigned long)crash->hfsr,
+                 (unsigned long)crash->sp);
+        hdmi_lite_draw_text(0, 8, line);
+        if (kind == CRASH_FAULT) {
+            snprintf(line, sizeof line, "BF %08lX MM %08lX EX %08lX V%lu",
+                     (unsigned long)crash->bfar, (unsigned long)crash->mmfar,
+                     (unsigned long)crash->exc_return,
+                     (unsigned long)crash->frame_valid);
+        } else {
+            snprintf(line, sizeof line, "D %lu X %08lX TC %d CP %lu",
+                     (unsigned long)crash->detail, (unsigned long)crash->extra,
+                     gametic, (unsigned long)hdmi_diag_checkpoint);
+        }
+        hdmi_lite_draw_text(0, 16, line);
+    } else {
+        extern int demosequence;
+        snprintf(line, sizeof line, "LP %lu TC %d CP %lu",
+                 (unsigned long)hdmi_diag_doomloop_count, gametic,
+                 (unsigned long)hdmi_diag_checkpoint);
+        hdmi_lite_draw_text(0, 0, line);
+        snprintf(line, sizeof line, "FZ %lu HC %lu C1 %lu",
+                 (unsigned long)snd_diag_zone_free,
+                 (unsigned long)snd_diag_heap_bad,
+                 (unsigned long)hdmi_diag_vsync_count);
+        hdmi_lite_draw_text(0, 8, line);
+        snprintf(line, sizeof line, "DM %d PB %lu CN %lu RS %lu", demosequence,
+                 (unsigned long)hdmi_diag_pd_publish_count,
+                 (unsigned long)hdmi_diag_frameconsume_count,
+                 (unsigned long)video_output_resync_count);
+        hdmi_lite_draw_text(0, 16, line);
+    }
+#else
     memset(hdmi_lite_text_canvas, 0, HDMI_LITE_TEXT_ROWS * SCREENWIDTH * 2);
     snprintf(line, sizeof line, "LP %lu TC %d ER %lu CP %lu",
              (unsigned long)hdmi_diag_doomloop_count, gametic,
@@ -1430,6 +1485,7 @@ static void hdmi_lite_update_diag_rows(void) {
              (unsigned long)video_output_precomposed_stale_count,
              (unsigned long)video_output_resync_count);
     hdmi_lite_draw_text(0, 16, line);
+#endif
 }
 
 static const uint32_t *__scratch_x("doom_scanline") hdmi_lite_pointer_callback(uint32_t v_scanline, uint32_t active_line) {

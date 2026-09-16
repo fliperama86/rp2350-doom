@@ -272,17 +272,18 @@ thinker_t *Z_ThinkMallocImpl(int size) {
     int slot = __builtin_ctz(*bitset);
     assert(slot >= 0 && slot < 8);
     thinker_t *thinker = thinker_n(block, slot, size);
-    memset(thinker, 0, size);
-    // indicate that this thinker is in a pool (and where)
-    thinker->pool_info = (type << 4u) | 0x8 | slot;
     *bitset &= ~(1u << slot);
 //    printf("Pool %d @ %p, allocating slot %d %02x (free) = %p pi %02x\n", size, block, slot, *bitset, thinker, thinker->pool_info);
     if (!*bitset) {
-        // if the pool is now full, so follow the link from the last
-        // allocated thinker (us)
+        // The last free slot owns the link to the remaining partial pools.
+        // Follow it BEFORE memset: clearing it first orphans their free slots
+        // and forces new zone allocations despite reusable space.
 //        printf("  unlinking full block from head\n");
         thinker_pool[type] = thinker->sp_next;
     }
+    memset(thinker, 0, size);
+    // indicate that this thinker is in a pool (and where)
+    thinker->pool_info = (type << 4u) | 0x8 | slot;
     return thinker;
 }
 

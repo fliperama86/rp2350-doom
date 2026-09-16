@@ -62,8 +62,13 @@ extern uint8_t *exit_screen_kb_buffer_80;
 void I_Error (const char *error, ...) NORETURN PRINTF_ATTR(1, 2);
 #else
 #include "pico.h"
+#if PICODOOM_CRASH_DIAG
+#include "pico/crash_diag/crash_diag.h"
+#define I_Error(args...) picodoom_crash_stop(CRASH_ENGINE, __LINE__, 0)
+#else
 //#define I_Error(args...) ((void)0)
 #define I_Error(args...) __breakpoint();
+#endif
 #endif
 
 #if DOOM_TINY
@@ -103,4 +108,3 @@ void I_PrintDivider(void);
 extern boolean disallow_core1_malloc;
 #endif
 #endif
-

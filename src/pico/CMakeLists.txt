@@ -100,6 +100,20 @@ if (NOT PICODOOM_DIAG_OVERLAY MATCHES "^[01]$")
     message(FATAL_ERROR "PICODOOM_DIAG_OVERLAY must be 0 or 1")
 endif()
 
+set(PICODOOM_CRASH_DIAG "0" CACHE STRING "Capture fatal errors and CPU faults for the LITE on-screen crash readout")
+set_property(CACHE PICODOOM_CRASH_DIAG PROPERTY STRINGS 0 1)
+if (NOT PICODOOM_CRASH_DIAG MATCHES "^[01]$")
+    message(FATAL_ERROR "PICODOOM_CRASH_DIAG must be 0 or 1")
+endif()
+if (PICODOOM_CRASH_DIAG)
+    if (NOT PICO_PLATFORM STREQUAL "rp2350-arm-s" OR NOT PICODOOM_HDMI_LITE OR
+        PICODOOM_HDMI_CMDLIST OR NOT PICODOOM_DIAG_OVERLAY)
+        message(FATAL_ERROR "Crash diagnostics require rp2350-arm-s, HDMI_LITE=1, HDMI_CMDLIST=0 and DIAG_OVERLAY=1")
+    endif()
+    pico_wrap_function(common_pico panic)
+    pico_wrap_function(common_pico __assert_func)
+endif()
+
 set(PICODOOM_EMU8950_ASM "1" CACHE STRING "Use the RP2040-era slot-render ARM asm (0 = equivalent C path, for the music-runaway bisect)")
 set_property(CACHE PICODOOM_EMU8950_ASM PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_EMU8950_ASM MATCHES "^[01]$")
@@ -219,6 +233,7 @@ if (PICO_ON_DEVICE)
             ${CMAKE_CURRENT_LIST_DIR}/blit.S
             ${CMAKE_CURRENT_LIST_DIR}/hstx_cmdlist.c
             ${CMAKE_CURRENT_LIST_DIR}/picoflash.c
+            ${CMAKE_CURRENT_LIST_DIR}/crash_diag/crash_diag.S
             )
     if (NOT PICODOOM_TEST_NO_ZONE_MALLOC)
         pico_wrap_function(common_pico malloc)
@@ -262,6 +277,7 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_NO_MUSIC=${PICODOOM_NO_MUSIC}
         PICODOOM_NO_SFX=${PICODOOM_NO_SFX}
         PICODOOM_DIAG_OVERLAY=${PICODOOM_DIAG_OVERLAY}
+        PICODOOM_CRASH_DIAG=${PICODOOM_CRASH_DIAG}
         PICODOOM_HDMI_AUDIO_TEST_TONE=${PICODOOM_HDMI_AUDIO_TEST_TONE}
         $<$<BOOL:${PICODOOM_HDMI_240P}>:VIDEO_MODE_320x240=1>
         PICODOOM_SOLID_COLOR=${PICODOOM_SOLID_COLOR}

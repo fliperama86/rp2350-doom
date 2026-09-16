@@ -32,6 +32,9 @@
 
 #include "doomtype.h"
 #include "i_picosound.h"
+#if PICODOOM_CRASH_DIAG
+#include "crash_diag/crash_diag.h"
+#endif
 // #include "pico/audio_i2s.h" // Audio hardware disabled
 #include "pico/binary_info.h"
 #include "hardware/gpio.h"
@@ -467,10 +470,21 @@ static void I_Pico_UpdateSound(void)
         if ((++snd_diag_calls & 63) == 0) {
             extern int Z_FreeMemory(void);
             extern int Z_ValidateHeap(void);
+#if PICODOOM_CRASH_DIAG
+            // The old diagnostic walked the untrusted list without a bound
+            // BEFORE validating it. Don't let diagnostics hide a corrupt heap
+            // by hanging in Z_FreeMemory instead of publishing a crash record.
+            snd_diag_heap_bad = (uint32_t)Z_ValidateHeap();
+            if (snd_diag_heap_bad) {
+                picodoom_crash_stop(CRASH_HEAP, snd_diag_heap_bad, 0);
+            }
+            snd_diag_zone_free = (uint32_t)Z_FreeMemory();
+#else
             snd_diag_zone_free = (uint32_t)Z_FreeMemory();
             if (!snd_diag_heap_bad) {
                 snd_diag_heap_bad = (uint32_t)Z_ValidateHeap();
             }
+#endif
         }
     }
 

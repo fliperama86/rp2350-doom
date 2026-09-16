@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")" && pwd)
 BUILD_DIR="${ROOT}/build"
 WHX_FILE="${ROOT}/doom1.whx"
-WHX_ADDR="0x10042000"
+WHX_ADDR="0x10044000"
 
 if [[ $# -gt 1 ]]; then
     echo "usage: $0 [path/to/doom_tiny_usb.uf2]" >&2
@@ -15,7 +15,7 @@ if [[ $# -eq 1 ]]; then
     UF2_FILE="$1"
 else
     # release configuration (v0.1.2 lineage): LITE HDMI+audio, C OPL
-    # renderer, no diag overlay, full speed, WHX at 0x10080000
+    # renderer, diagnostics off, full speed, WHX at 0x10044000 (2 MB board).
     cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja \
         -DCMAKE_BUILD_TYPE=MinSizeRel \
         -DPICO_BOARD=pico2 \
@@ -26,7 +26,8 @@ else
         -DPICODOOM_HDMI_LITE=1 \
         -DPICODOOM_EMU8950_ASM=0 \
         -DPICODOOM_DIAG_OVERLAY=0 \
-        -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10080000 \
+        -DPICODOOM_CRASH_DIAG=0 \
+        -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10044000 \
         -DPICODOOM_SKIP_WIPES=1 \
         -DPICODOOM_SYS_CLOCK_KHZ=252000 \
         -DPICODOOM_HDMI_HSTX_CLK_DIV=2 \

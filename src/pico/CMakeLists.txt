@@ -94,7 +94,7 @@ if (NOT PICODOOM_BOOT_HALT MATCHES "^[0-9]$")
     message(FATAL_ERROR "PICODOOM_BOOT_HALT must be 0-9")
 endif()
 
-set(PICODOOM_DIAG_OVERLAY "1" CACHE STRING "Show the on-screen diagnostic counter overlay in LITE builds (0 for release; counters still maintained)")
+set(PICODOOM_DIAG_OVERLAY "0" CACHE STRING "Show the on-screen diagnostic counter overlay in LITE builds (0 for release; counters still maintained)")
 set_property(CACHE PICODOOM_DIAG_OVERLAY PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_DIAG_OVERLAY MATCHES "^[01]$")
     message(FATAL_ERROR "PICODOOM_DIAG_OVERLAY must be 0 or 1")

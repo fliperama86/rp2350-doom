@@ -6,8 +6,9 @@ Clocks, HDMI mode, audio, and the attract sequence are unchanged.
 
 ## Build and package
 
-The September 2026 board has 2 MB flash. The old `flash.sh` no-argument
-configuration still targets the previous 16 MB board. Do not use it here.
+The September 2026 board has 2 MB flash. Release and diagnostic builds now
+use WHX at `0x10044000`. `flash.sh` explicitly disables both diagnostics on
+release builds, even when reusing a diagnostic cache; enable them as below.
 
 Starting from the existing release-configured canonical `build/`:
 
@@ -21,8 +22,9 @@ python3 src/pico/crash_diag/package_uf2.py build/src/doom_tiny_usb.uf2 \
   doom1.whx build/diagnostics/doom_crash_full.uf2
 ```
 
-Flash **doom_crash_full.uf2**, not the code-only UF2: the diagnostic firmware
-uses a relocated WHX. The packager checks firmware/BIN agreement, overlap,
+Prefer **doom_crash_full.uf2** when the board's game-data placement is unknown.
+Boards predating this diagnostic used WHX at `0x10042000`; a code-only update
+from that layout is insufficient. The packager checks firmware/BIN agreement, overlap,
 erase-sector alignment, the 2 MB limit, and every output payload byte. It uses
 picotool to retain the RP2350-E10 absolute-block workaround.
 

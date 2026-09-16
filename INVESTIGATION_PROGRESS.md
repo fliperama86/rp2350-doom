@@ -739,3 +739,36 @@ fix for the tested workload. This is not an all-level/gameplay endurance claim.
 The earlier no-dropout observation remains encouraging, but neither a common
 cause nor a separate HDMI-dropout cure has been established. Diagnostic overlay
 is still enabled; no further flashing/configuration change was made.
+
+### Extended post-fix hardware observation (2026-09-15)
+
+User reports no output drops after many minutes, estimated approximately 30.
+Together with the earlier report of about four completed attract loops without
+the repeatable crash, this is a substantially stronger stability result for the
+current pool-fix + diagnostic build. Duration is approximate; no counter readout
+was supplied. Record no observed drops, not proof that the allocator bug caused
+the earlier HDMI disturbances. No firmware or configuration changes made.
+
+### Production configuration restored (2026-09-16)
+
+User requested disabling diagnostics and pushing the production configuration.
+Both PICODOOM_DIAG_OVERLAY and PICODOOM_CRASH_DIAG are now 0 in canonical build/.
+The overlay's fresh-cache default is also 0, and flash.sh explicitly turns both
+options off so a reused crash-diagnostic cache cannot keep capture enabled or
+fail the overlay requirement check.
+
+Release defaults, flash.sh and AGENTS.md now agree on WHX 0x10044000, retaining
+this board's already-flashed data placement and fitting its 2 MB flash. The old
+flash.sh 0x10080000 release setting was for the previous larger-flash board and
+was not viable here. No allocator, clock, audio, or scanout behavior was changed.
+
+Validation: MinSizeRel build passed; linked-code thinker-pool regression passed
+(16 edge cases, 3000 mixed operations, non-pooled allocations, level teardown).
+Checked that crash capture, panic/assert wrappers, and the diagnostic text
+renderer/font are absent from the release ELF. Bash syntax check passed.
+Combined code+WHX image verified against every UF2 payload byte and the 2 MB limit.
+
+Production artifact: build/release/doom_tiny_usb_full.uf2, matching ELF beside it.
+This production image has not been flashed; the board still runs the tested
+pool-fix image with diagnostics enabled. Earlier diagnostic images/symbols are
+preserved. Pre-existing HDMI experiments remain outside this production commit.

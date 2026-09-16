@@ -26,7 +26,8 @@ cmake -S . -B build -G Ninja \
   -DPICO_STDIO_USB=OFF -DPICO_STDIO_UART=ON \
   -DPICODOOM_HDMI_DIAG_STAGE=3 -DPICODOOM_HDMI_DVI_MODE=0 \
   -DPICODOOM_HDMI_LITE=1 -DPICODOOM_EMU8950_ASM=0 -DPICODOOM_DIAG_OVERLAY=0 \
-  -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10080000 \
+  -DPICODOOM_CRASH_DIAG=0 \
+  -DPICODOOM_DOOM_TINY_USB_WAD_ADDR=0x10044000 \
   -DPICODOOM_SKIP_WIPES=1 \
   -DPICODOOM_SYS_CLOCK_KHZ=252000 -DPICODOOM_HDMI_HSTX_CLK_DIV=2 \
   -DPICODOOM_RENDER_THROTTLE_US=0
@@ -35,7 +36,8 @@ cmake --build build --target doom_tiny_usb -j
 
 - `PICODOOM_EMU8950_ASM=0` is REQUIRED for correct music (the RP2040-era asm corrupts OPL state on RP2350 — see `INVESTIGATION_PROGRESS.md`). `PICODOOM_DIAG_OVERLAY=1` re-enables the on-screen counter overlay for debugging.
 - Four device targets exist (`add_doom_tiny` in `src/CMakeLists.txt`): `doom_tiny`, `doom_tiny_usb`, `doom_tiny_nost`, `doom_tiny_nost_usb`. `*_usb` adds USB-keyboard (TinyUSB host); `*_nost` ("non super tiny") uses the larger WHD format for big WADs. `doom_tiny_usb` is the one normally built/flashed here.
-- WHX/WHD load addresses (`TINY_WAD_ADDR`): `doom_tiny_usb` uses `PICODOOM_DOOM_TINY_USB_WAD_ADDR` (release: `0x10080000`; the board has 16 MB flash); `doom_tiny`=`PICODOOM_DOOM_TINY_WAD_ADDR` (default `0x10040000`), `*_nost*`=`0x10048000`.
+- WHX/WHD load addresses (`TINY_WAD_ADDR`): `doom_tiny_usb` uses `PICODOOM_DOOM_TINY_USB_WAD_ADDR` (release: `0x10044000`; the current RP2354B board has 2 MB flash); `doom_tiny`=`PICODOOM_DOOM_TINY_WAD_ADDR` (default `0x10040000`), `*_nost*`=`0x10048000`. The previous board's `0x10080000` layout does not fit this board. Release and crash-diagnostic builds now use the same WHX address.
+- Release builds explicitly set both `PICODOOM_DIAG_OVERLAY=0` and `PICODOOM_CRASH_DIAG=0`, including when reusing a diagnostic build cache. To re-enable crash capture, set both to 1; see `src/pico/crash_diag/README.md`.
 - `pico-extras` is no longer a real dependency of the HDMI path, but `pico_extras_import.cmake` is still included; passing `-DPICO_EXTRAS_PATH` avoids configure noise.
 
 ## Flashing

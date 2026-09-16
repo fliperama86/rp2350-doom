@@ -644,11 +644,10 @@ if (PICO_SDK)
         suppress_tinyusb_warnings()
         add_doom_tiny(_usb render_newhope)
         target_link_libraries(doom_tiny_usb PRIVATE tiny_settings pico_cd)
-        # Default kept at the historical 0x10042000; boards with bigger
-        # flash (this project's WeAct RP2350B has 16 MB) can move the WHX up
-        # (e.g. 0x10080000, fruitjam precedent) for code-size headroom --
-        # the C OPL renderer left only ~270 bytes at the old address.
-        set(PICODOOM_DOOM_TINY_USB_WAD_ADDR "0x10042000" CACHE STRING "WHX load address for the doom_tiny_usb target")
+        # Shared release/diagnostic layout for the current 2 MB RP2354B.
+        # Larger-flash boards may override this for more code headroom;
+        # 0x10080000 does not fit doom1.whx on the current board.
+        set(PICODOOM_DOOM_TINY_USB_WAD_ADDR "0x10044000" CACHE STRING "WHX load address for the doom_tiny_usb target")
         target_compile_definitions(doom_tiny_usb PRIVATE
                 USB_SUPPORT=1
                 TINY_WAD_ADDR=${PICODOOM_DOOM_TINY_USB_WAD_ADDR}

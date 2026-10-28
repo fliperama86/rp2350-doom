@@ -634,6 +634,29 @@ if (PICO_SDK)
             TINY_WAD_ADDR=${PICODOOM_DOOM_TINY_WAD_ADDR}
     )
     target_link_libraries(doom_tiny PRIVATE tiny_settings)
+    if (PICODOOM_LCD)
+        # The ST77916 init table and QSPI PIO program come from the SaintCon 26
+        # badge GIF player (github.com/im-redactd/saintcon26-gif-player).
+        set(SC26_GIF_PLAYER_SRC "${CMAKE_CURRENT_LIST_DIR}/../../saintcon26-gif-player/src"
+            CACHE PATH "saintcon26-gif-player src directory (st77916_init.h, qspi_lcd.pio)")
+        if (NOT EXISTS "${SC26_GIF_PLAYER_SRC}/st77916_init.h")
+            message(FATAL_ERROR "PICODOOM_LCD needs SC26_GIF_PLAYER_SRC pointing at saintcon26-gif-player/src")
+        endif()
+        set(SC26_SRC "${SC26_GIF_PLAYER_SRC}")
+        target_sources(doom_tiny PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/pico/lcd_badge.c
+            ${CMAKE_CURRENT_LIST_DIR}/pico/badge_diag.c)
+        target_include_directories(doom_tiny PRIVATE ${SC26_SRC} ${CMAKE_CURRENT_LIST_DIR}/pico)
+        target_link_libraries(doom_tiny PRIVATE hardware_pio hardware_dma hardware_pwm hardware_clocks hardware_watchdog)
+        target_compile_definitions(doom_tiny PRIVATE
+            PICO_PANIC_FUNCTION=badge_panic
+            PICO_PANIC_FUNCTION_DOES_NOT_RETURN=1)
+        pico_generate_pio_header(doom_tiny ${SC26_SRC}/qspi_lcd.pio)
+        file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/doom_slot)
+        file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/doom_slot/pico_flash_region.ld
+            "FLASH(rx) : ORIGIN = 0x10100000, LENGTH = 0x100000\n")
+        pico_add_linker_script_override_path(doom_tiny ${CMAKE_CURRENT_BINARY_DIR}/doom_slot FILES pico_flash_region.ld)
+    endif()
     add_doom_tiny(_nost render_newhope)
 
     target_compile_definitions(doom_tiny_nost PRIVATE

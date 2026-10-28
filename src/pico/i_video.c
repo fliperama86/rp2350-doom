@@ -43,8 +43,17 @@
 #include "w_wad.h"
 #include "z_zone.h"
 
+#if !PICODOOM_LCD
 #include "pico_hdmi/video_output.h"
 #include "pico_hdmi/hstx_data_island_queue.h"
+#endif
+#if PICODOOM_LCD
+#include "badge_diag.h"
+void lcd_badge_init(void);
+void lcd_badge_begin(int w, int h);
+void lcd_badge_push_line(uint16_t *rgb565, int w);
+void lcd_badge_end(void);
+#endif
 #include "hardware/timer.h"
 #include "pico/multicore.h"
 #include "pico/sync.h"
@@ -170,7 +179,9 @@ volatile uint8_t interp_in_use;
 #if PICODOOM_HDMI_LINE_RING
 #error PICODOOM_HDMI_CMDLIST replaces the line ring; set PICODOOM_HDMI_LINE_RING=0
 #endif
+#if !PICODOOM_LCD
 #include "hstx_cmdlist.h"
+#endif
 #endif
 
 #if PICODOOM_HDMI_CMDLIST || PICODOOM_HDMI_LITE
@@ -263,6 +274,9 @@ void hdmi_diag_boot_marker_set(uint32_t value) {
     }
     hdmi_diag_init_marker = value;
     hdmi_diag_init_marker_inv = ~value;
+#if PICODOOM_LCD
+    badge_diag_stage(value);
+#endif
 }
 
 uint32_t hdmi_diag_boot_marker_get(void) {
@@ -939,7 +953,14 @@ void hdmi_fifo_probe_report(void) {}
 #endif
 
 #if PICODOOM_HDMI_USE_RGB565_FRAME
+#if PICODOOM_LCD
+// A full 320x200 RGB565 frame is 125 KB, and it was sitting in the only
+// 256 KB window Doom's zone allocator is allowed to use. That left ~75 KB
+// and Z_Init fell over the moment the menu launched the game.
+static uint32_t __aligned(4) hdmi_rgb565_line[SCREENWIDTH / 2];
+#else
 static uint32_t __aligned(4) hdmi_rgb565_frame[SCREENHEIGHT][SCREENWIDTH / 2];
+#endif
 static volatile bool hdmi_rgb565_frame_ready;
 static bool hdmi_rgb565_frame_frozen;
 #endif
@@ -1257,8 +1278,16 @@ static void hdmi_rgb565_build_display_frame(void) {
         return;
     }
 
+#if PICODOOM_LCD
+    lcd_badge_begin(SCREENWIDTH, SCREENHEIGHT);
+#endif
     for (int doom_line = 0; doom_line < SCREENHEIGHT; doom_line++) {
+#if PICODOOM_LCD
+        hdmi_render_native_scanline(hdmi_rgb565_line, doom_line);
+        lcd_badge_push_line((uint16_t *)hdmi_rgb565_line, SCREENWIDTH);
+#else
         hdmi_render_native_scanline(hdmi_rgb565_frame[doom_line], doom_line);
+#endif
 #if PICODOOM_HDMI_LITE
         // The compose ring leads the beam by ~88 lines but this whole-frame
         // rebuild takes ~3 ms (~95 scanout lines): without mid-rebuild
@@ -1279,6 +1308,14 @@ static void hdmi_rgb565_build_display_frame(void) {
 #endif
     __compiler_memory_barrier();
     hdmi_rgb565_frame_ready = true;
+#if PICODOOM_LCD
+    lcd_badge_end();
+    static bool first_frame_seen;
+    if (!first_frame_seen) {
+        first_frame_seen = true;
+        badge_diag_stage(BADGE_STAGE_FIRST_FRAME);
+    }
+#endif
 #if PICODOOM_HDMI_FREEZE_RGB565_FRAME
     hdmi_rgb565_frame_frozen = true;
 #endif
@@ -1708,7 +1745,12 @@ static void core1_background_task(void) {
 
 #pragma GCC pop_options
 
-#if PICODOOM_HDMI_CMDLIST
+#if PICODOOM_LCD
+static void core1() {
+    sem_release(&core1_launch);
+    while (true) new_frame_stuff();
+}
+#elif PICODOOM_HDMI_CMDLIST
 static void core1() {
     // Bus priority is (re)set inside hstx_cmdlist_scanout_start; with no
     // per-line ISR the scanout DMA is the only real-time agent on this core.
@@ -1825,6 +1867,11 @@ void I_InitGraphics(void)
         }
     }
     #endif
+#if PICODOOM_LCD
+    badge_diag_stage(BADGE_STAGE_LCD_START);
+    lcd_badge_init();
+    badge_diag_stage(BADGE_STAGE_LCD_DONE);
+#endif
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
     printf("HDMI diag stage=%d dvi_mode=%d cmdlist=%d\n", PICODOOM_HDMI_DIAG_STAGE,
@@ -1836,6 +1883,9 @@ void I_InitGraphics(void)
     multicore_launch_core1_with_stack(core1, core1_stack, sizeof(core1_stack));
     // wait for core1 launch as it may do malloc and we have no mutex around that
     sem_acquire_blocking(&core1_launch);
+#if PICODOOM_LCD
+    badge_diag_stage(BADGE_STAGE_CORE1);
+#endif
 #if USE_ZONE_FOR_MALLOC
     disallow_core1_malloc = true;
 #endif

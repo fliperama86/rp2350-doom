@@ -51,6 +51,9 @@
 #if PICO_RP2350
 #include "hardware/structs/qmi.h"
 #endif
+#if PICODOOM_LCD
+#include "badge_diag.h"
+#endif
 
 #ifndef PICODOOM_SYS_CLOCK_KHZ
 #define PICODOOM_SYS_CLOCK_KHZ 252000
@@ -76,6 +79,16 @@ int main(int argc, char **argv)
     myargv = argv;
 #endif
 #if PICO_ON_DEVICE
+#if PICODOOM_LCD
+#undef PICO_SMPS_MODE_PIN
+    badge_diag_start();
+#endif
+#if PICODOOM_LCD
+    // Stay on the clock the launcher already set. Rewriting the flash
+    // timing and the PLL while we are executing out of that flash is how
+    // a jumped-to image dies before it draws a pixel. HDMI builds still
+    // need the 252 MHz clock below.
+#else
 #if PICO_RP2350
     uint clkdiv = 3;
     uint rxdelay = 2;
@@ -90,6 +103,7 @@ int main(int argc, char **argv)
     busy_wait_us(1000);
     // todo pause? is this the cause of the cold start issue?
     set_sys_clock_khz(PICODOOM_SYS_CLOCK_KHZ, true);
+#endif
 #if !USE_PICO_NET
     // debug ?
 //    gpio_debug_pins_init();

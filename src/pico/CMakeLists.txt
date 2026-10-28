@@ -1,5 +1,7 @@
 add_library(common_pico INTERFACE)
 
+set(PICODOOM_LCD "0" CACHE STRING "1 = draw Doom on the badge's round LCD instead of HDMI")
+
 set(PICODOOM_HDMI_DIAG_STAGE "0" CACHE STRING "HDMI diagnostic stage: 0=normal, 1=color bars, 2=doom base no overlays, 3=normal with deferred vsync work")
 set_property(CACHE PICODOOM_HDMI_DIAG_STAGE PROPERTY STRINGS 0 1 2 3)
 if (NOT PICODOOM_HDMI_DIAG_STAGE MATCHES "^[0-3]$")
@@ -81,6 +83,9 @@ set(PICODOOM_HDMI_CMDLIST "0" CACHE STRING "Use the per-frame DMA command-list H
 set_property(CACHE PICODOOM_HDMI_CMDLIST PROPERTY STRINGS 0 1)
 if (NOT PICODOOM_HDMI_CMDLIST MATCHES "^[01]$")
     message(FATAL_ERROR "PICODOOM_HDMI_CMDLIST must be 0 or 1")
+endif()
+if (PICODOOM_LCD)
+    set(PICODOOM_HDMI_CMDLIST 1)
 endif()
 
 set(PICODOOM_HDMI_LITE "0" CACHE STRING "Use the pico_hdmi transport with pre-composed line headers + native pixel pointers (ISR does pointer swaps only): stable video AND HDMI audio")
@@ -231,10 +236,12 @@ target_sources(common_pico INTERFACE
 if (PICO_ON_DEVICE)
     target_sources(common_pico INTERFACE
             ${CMAKE_CURRENT_LIST_DIR}/blit.S
-            ${CMAKE_CURRENT_LIST_DIR}/hstx_cmdlist.c
             ${CMAKE_CURRENT_LIST_DIR}/picoflash.c
             ${CMAKE_CURRENT_LIST_DIR}/crash_diag/crash_diag.S
             )
+    if (NOT PICODOOM_LCD)
+        target_sources(common_pico INTERFACE ${CMAKE_CURRENT_LIST_DIR}/hstx_cmdlist.c)
+    endif()
     if (NOT PICODOOM_TEST_NO_ZONE_MALLOC)
         pico_wrap_function(common_pico malloc)
         pico_wrap_function(common_pico calloc)
@@ -271,6 +278,7 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_HDMI_LINE_RING_PREPARE=${PICODOOM_HDMI_LINE_RING_PREPARE}
         PICODOOM_HDMI_LINE_RING_VBLANK_ONLY=${PICODOOM_HDMI_LINE_RING_VBLANK_ONLY}
         PICODOOM_HDMI_CMDLIST=${PICODOOM_HDMI_CMDLIST}
+        PICODOOM_LCD=${PICODOOM_LCD}
         PICODOOM_HDMI_LITE=${PICODOOM_HDMI_LITE}
         $<$<BOOL:${PICODOOM_HDMI_LITE}>:PICO_HDMI_PRECOMPOSED_ACTIVE_LINES=1>
         PICODOOM_BOOT_HALT=${PICODOOM_BOOT_HALT}
@@ -295,7 +303,11 @@ target_compile_definitions(common_pico INTERFACE
         PICODOOM_FRAME_CAP_FPS=${PICODOOM_FRAME_CAP_FPS}
 )
 
-target_link_libraries(common_pico INTERFACE pico_stdlib pico_multicore pico_hdmi)
+if (PICODOOM_LCD)
+    target_link_libraries(common_pico INTERFACE pico_stdlib pico_multicore)
+else()
+    target_link_libraries(common_pico INTERFACE pico_stdlib pico_multicore pico_hdmi)
+endif()
 
 add_library(pico_cd INTERFACE)
 if (TARGET tinyusb_host)

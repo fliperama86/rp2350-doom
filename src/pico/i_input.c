@@ -520,7 +520,96 @@ static void pico_quit(void) {
 }
 #endif
 
+#if PICODOOM_LCD
+#include "badge_diag.h"
+#include "hardware/gpio.h"
+#include "hardware/watchdog.h"
+#include "pico/time.h"
+
+#include "m_controls.h"
+
+extern boolean menuactive;
+
+// Badge buttons, active low: up, down, left, right, centre, B, A.
+static const uint8_t badge_pins[] = {23, 21, 22, 19, 20, 16, 17};
+static uint32_t badge_held;
+static uint32_t badge_b_since;
+// The key each button sent when pressed, so the release matches even if the
+// menu opened or closed while it was held.
+static int badge_sent[count_of(badge_pins)];
+
+// The tiny build binds gameplay to W/S/A/D, J and K, while the menus only
+// listen to the arrows, Enter, Backspace and Escape.
+static int badge_key_for(int button) {
+    if (menuactive) {
+        static const int menu_keys[] = {
+            KEY_UPARROW, KEY_DOWNARROW, KEY_LEFTARROW, KEY_RIGHTARROW, KEY_ESCAPE, KEY_BACKSPACE, KEY_ENTER
+        };
+        return menu_keys[button];
+    }
+    switch (button) {
+        case 0: return key_up;
+        case 1: return key_down;
+        case 2: return key_left;
+        case 3: return key_right;
+        case 4: return KEY_ESCAPE;
+        case 5: return key_use;
+        default: return key_fire;
+    }
+}
+
+static void badge_post(int key, bool down) {
+    event_t ev;
+    ev.type = down ? ev_keydown : ev_keyup;
+    ev.data1 = key;
+    ev.data2 = down && key >= 32 && key < 127 ? key : 0;
+    ev.data3 = ev.data2;
+    if (ev.data1) D_PostEvent(&ev);
+}
+
+static void badge_poll(void) {
+    badge_diag_feed();
+    uint32_t now = to_ms_since_boot(get_absolute_time());
+    uint32_t held = 0;
+    for (int i = 0; i < (int)count_of(badge_pins); i++)
+        if (!gpio_get(badge_pins[i])) held |= 1u << i;
+    uint32_t pressed = held & ~badge_held;
+    uint32_t released = badge_held & ~held;
+    badge_held = held;
+    for (int i = 0; i < (int)count_of(badge_pins); i++) {
+        if (pressed & (1u << i)) {
+            badge_sent[i] = badge_key_for(i);
+            badge_post(badge_sent[i], true);
+        }
+        if (released & (1u << i)) {
+            badge_post(badge_sent[i], false);
+        }
+    }
+    // Hold B for a second to come back to the klippy-cade picker.
+    if (held & (1u << 5)) {
+        if (!badge_b_since) badge_b_since = now ? now : 1;
+        else if (now - badge_b_since > 1000) {
+            badge_diag_clear();
+            watchdog_reboot(0, 0, 10);
+        }
+    } else {
+        badge_b_since = 0;
+    }
+}
+
+static void badge_buttons_init(void) {
+    for (int i = 0; i < (int)count_of(badge_pins); i++) {
+        gpio_init(badge_pins[i]);
+        gpio_set_dir(badge_pins[i], GPIO_IN);
+        gpio_pull_up(badge_pins[i]);
+    }
+}
+#endif
+
 void I_InputInit(void) {
+#if PICODOOM_LCD
+    badge_buttons_init();
+#endif
 #if PICO_NO_HARDWARE
     platform_key_down = pico_key_down;
     platform_key_up = pico_key_up;
@@ -532,6 +621,9 @@ void I_InputInit(void) {
 }
 
 void I_GetEvent() {
+#if PICODOOM_LCD
+    badge_poll();
+#endif
 #if USB_SUPPORT
     tuh_task();
 #endif
@@ -539,7 +631,9 @@ void I_GetEvent() {
 }
 
 void I_GetEventTimeout(int key_timeout) {
-#if PICO_ON_DEVICE && !NO_USE_UART
+// The LCD badge build has UART stdio off, so UART0 is still held in reset
+// and touching it faults.
+#if PICO_ON_DEVICE && !NO_USE_UART && !PICODOOM_LCD
     if (uart_is_readable(uart_default)) {
         char c = uart_getc(uart_default);
         if (c == 26 && uart_is_readable_within_us(uart_default, key_timeout)) {
